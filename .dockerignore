@@ -1,0 +1,13 @@
+/target
+/dist
+/.git
+/.github
+/.cx-dev
+/spec
+/assets
+/scripts
+/deploy
+.env
+.env.*
+*.md
+mise.toml

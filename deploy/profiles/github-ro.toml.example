@@ -1,0 +1,53 @@
+# Profile example (`/etc/cx/profiles/github-ro.toml`)
+
+name = "github-ro"
+provider = "github"
+
+# 可选参数覆盖（例如接入自建 GitHub Enterprise）
+# [params]
+# api_host = "api.ghe.internal"
+# web_host = "ghe.internal"
+
+# 可选覆盖虚拟 Key 生成规则（默认继承 provider 的 [virtual_key]）
+# [virtual_key]
+# format = "random"
+# prefix = "gho_cx_"
+# length = 32
+# charset = "alnum"
+
+# 真实密钥绑定（强类型结构化配置：source = "env" | "db" | "inline"）
+[secrets.token]
+source = "env"
+var = "REAL_GITHUB_TOKEN"
+
+# 也可以绑定到服务端加密数据库中的共享或个人密钥：
+# [secrets.token]
+# source = "db"
+# scope = "shared"      # "shared" | "personal"
+# name = "github_org_bot"
+# field = "token"       # 可选，默认与本节字段名一致
+
+# RBAC 授权：哪些 OIDC 组或用户可使用此 Profile
+[allow]
+groups = ["eng-all", "cx-admins"]
+
+# 三级路由微调（默认继承 provider）
+[routing]
+# inject_hosts = ["api.github.com"]   # 可选：收窄域名范围
+# deny_hosts = ["blocked.example.com"]
+fallback = "client_passthrough"       # "client_passthrough" | "deny"
+
+# L7 策略（Deny 优先，默认拒绝；methods 默认 ["*"]，paths 默认 ["/**"]）
+[policy]
+preset = "readonly"
+
+[[policy.rules]]
+effect = "allow"
+methods = ["GET", "HEAD"]
+hosts = ["api.github.com"]
+paths = ["/user", "/repos/my-org/**"]
+
+[[policy.rules]]
+effect = "deny"
+hosts = ["api.github.com"]
+paths = ["/repos/my-org/billing/**"]

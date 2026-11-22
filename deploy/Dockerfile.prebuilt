@@ -1,0 +1,37 @@
+# Fast runtime-only image for prebuilt `cx-server` binaries (used by `scripts/build-server-image.sh`).
+# Mirrors the runtime stage of root `Dockerfile` identically.
+FROM debian:bookworm-slim AS runtime
+
+ARG APP_VERSION=0.1.0
+ARG GIT_SHA=unknown
+
+LABEL org.opencontainers.image.title="cx-server" \
+      org.opencontainers.image.description="Secretless CLI credential-injecting gateway server (HTTP control plane + QUIC data plane)" \
+      org.opencontainers.image.source="https://github.com/reonokiy/cx" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 --system cx \
+    && useradd --uid 10001 --gid 10001 --system --home-dir /etc/cx --shell /usr/sbin/nologin cx \
+    && mkdir -p /etc/cx/providers /etc/cx/profiles /etc/cx/certs /usr/share/cx/providers \
+    && chown -R cx:cx /etc/cx
+
+COPY cx-server /usr/local/bin/cx-server
+COPY providers/ /usr/share/cx/providers/
+
+RUN chmod 0755 /usr/local/bin/cx-server
+
+USER cx
+WORKDIR /etc/cx
+
+EXPOSE 8080/tcp
+EXPOSE 8443/udp
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["cx-server", "healthcheck", "--url", "http://127.0.0.1:8080/healthz"]
+
+ENTRYPOINT ["cx-server"]
+CMD ["serve", "-c", "/etc/cx/server.toml"]

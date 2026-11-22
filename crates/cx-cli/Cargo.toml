@@ -1,0 +1,47 @@
+[package]
+name = "cx-cli"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Secretless CLI credential-injecting proxy client (Linux Rootless NetNS + QUIC)"
+
+[[bin]]
+name = "cx"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+clap.workspace = true
+cx-crypto.workspace = true
+cx-protocol.workspace = true
+cx-tunnel.workspace = true
+dirs.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+libc.workspace = true
+nix.workspace = true
+quinn.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smoltcp.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+cx-plugin = { path = "../cx-plugin" }
+cx-server = { path = "../cx-server" }
+rcgen.workspace = true
+rustls-pemfile.workspace = true
+

@@ -1,0 +1,76 @@
+id = "github"
+version = "1.0.0"
+description = "GitHub CLI (gh) & Git over HTTPS"
+
+[virtual_key]
+format = "random"
+prefix = "gho_cx_"
+length = 32
+charset = "alnum"
+
+[params]
+api_host = "api.github.com"
+web_host = "github.com"
+uploads_host = "uploads.github.com"
+
+[env]
+GH_TOKEN = "{{virtual_key}}"
+GITHUB_TOKEN = "{{virtual_key}}"
+
+[[git]]
+host = "{{web_host}}"
+rewrite_from = [
+    "git@{{web_host}}:",
+    "ssh://git@{{web_host}}/",
+]
+username = "x-access-token"
+
+# Tier 1: 自动汇总为服务端可注入域名白名单
+[[inject]]
+id = "github-api-bearer"
+hosts = ["{{api_host}}", "{{uploads_host}}"]
+mode = "bearer"
+accept_schemes = ["Bearer", "token"]
+inject_scheme = "Bearer"
+secret = "token"
+
+[[inject]]
+id = "github-git-basic"
+hosts = ["{{web_host}}"]
+mode = "basic"
+username = "x-access-token"
+secret = "token"
+
+# Tier 2: 伴生域名走服务端 L4 透传（不解密 TLS、不注入密钥）
+[passthrough]
+hosts = [
+    "*.githubusercontent.com",
+    "codeload.github.com",
+    "release-assets.githubusercontent.com",
+]
+ports = [443]
+
+# 内置 L7 权限策略预设
+[[presets.readonly]]
+effect = "allow"
+methods = ["GET", "HEAD"]
+hosts = ["{{api_host}}"]
+paths = ["/**"]
+
+[[presets.readonly]]
+effect = "allow"
+methods = ["GET", "POST"]
+hosts = ["{{web_host}}"]
+paths = ["/*/*/info/refs", "/*/*/git-upload-pack"]
+
+[[presets.full]]
+effect = "allow"
+methods = ["*"]
+hosts = ["{{api_host}}", "{{uploads_host}}"]
+paths = ["/**"]
+
+[[presets.full]]
+effect = "allow"
+methods = ["GET", "POST"]
+hosts = ["{{web_host}}"]
+paths = ["/**"]

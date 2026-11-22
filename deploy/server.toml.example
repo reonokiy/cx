@@ -1,0 +1,45 @@
+# Infrastructure configuration (`/etc/cx/server.toml`)
+
+[http]
+listen = "127.0.0.1:8080"
+external_url = "https://cx.example.com"
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
+
+[quic]
+listen = "0.0.0.0:8443"
+public_addr = "cx.example.com:443"
+server_name = "cx.example.com"
+cert = "/etc/letsencrypt/live/cx.example.com/fullchain.pem"
+key = "/etc/letsencrypt/live/cx.example.com/privkey.pem"
+cert_reload_secs = 300
+keep_alive_secs = 15
+max_idle_timeout_secs = 60
+max_concurrent_bidi_streams = 256
+
+[oidc]
+issuer = "https://auth.example.com/realms/company"
+client_id = "cx-gateway"
+client_secret_env = "CX_OIDC_CLIENT_SECRET"
+groups_claim = "groups"
+admin_groups = ["cx-admins"]
+
+[storage]
+master_key_env = "CX_MASTER_KEY"
+
+[storage.postgres]
+host = "127.0.0.1"
+port = 5432
+database = "cx"
+username = "cx"
+password_env = "CX_POSTGRES_PASSWORD"
+ssl_mode = "prefer"
+max_connections = 16
+
+[security]
+block_private_ips = true
+session_ttl_secs = 900
+
+[dirs]
+providers = "./providers"
+profiles = "./profiles"
+enable_builtin_providers = true

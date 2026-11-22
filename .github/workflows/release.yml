@@ -1,0 +1,276 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0 or v0.1.0-alpha.1)"
+        required: true
+        type: string
+      publish_github_release:
+        description: "Publish CLI tarballs to GitHub Release (for mise)"
+        required: false
+        default: true
+        type: boolean
+      push_server_image:
+        description: "Build & push multi-arch cx-server image to GHCR"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+
+jobs:
+  prepare:
+    name: Prepare Release Metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      major_minor: ${{ steps.meta.outputs.major_minor }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      image_name: ${{ steps.meta.outputs.image_name }}
+      publish_release: ${{ steps.meta.outputs.publish_release }}
+      push_image: ${{ steps.meta.outputs.push_image }}
+    steps:
+      - name: Compute release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+            PUBLISH_RELEASE="${{ inputs.publish_github_release }}"
+            PUSH_IMAGE="${{ inputs.push_server_image }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            PUBLISH_RELEASE="true"
+            PUSH_IMAGE="true"
+          fi
+
+          if [[ "$TAG" != v* ]]; then
+            echo "ERROR: tag must start with 'v' (got: $TAG)" >&2
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          IS_PRERELEASE="false"
+          if [[ "$VERSION" == *-* ]]; then
+            IS_PRERELEASE="true"
+          fi
+
+          MAJOR_MINOR="$(echo "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
+          IMAGE_NAME="$(echo "${GITHUB_REPOSITORY_OWNER}/cx-server" | tr '[:upper:]' '[:lower:]')"
+
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "major_minor=${MAJOR_MINOR}"
+            echo "is_prerelease=${IS_PRERELEASE}"
+            echo "image_name=${IMAGE_NAME}"
+            echo "publish_release=${PUBLISH_RELEASE}"
+            echo "push_image=${PUSH_IMAGE}"
+          } >> "$GITHUB_OUTPUT"
+
+  cli-build:
+    name: Build CLI (${{ matrix.target }})
+    needs: prepare
+    if: needs.prepare.outputs.publish_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-release-${{ matrix.target }}
+
+      - name: Package cx CLI tarball
+        run: |
+          chmod +x scripts/package-cli.sh
+          ./scripts/package-cli.sh --tag "${{ needs.prepare.outputs.tag }}" --target "${{ matrix.target }}" --out-dir dist
+
+      - name: Smoke test built CLI binary
+        run: |
+          ./target/release/cx --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish-cli-release:
+    name: Publish GitHub Release (mise-ready)
+    needs: [prepare, cli-build]
+    if: needs.prepare.outputs.publish_release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate unified SHA256SUMS.txt
+        working-directory: dist
+        run: |
+          sha256sum -- *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attest CLI artifact build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*.tar.gz"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/SHA256SUMS.txt
+          body: |
+            ### Install CLI with `mise`
+
+            ```bash
+            mise use -g github:${{ github.repository }}@${{ needs.prepare.outputs.version }}
+            ```
+
+            ### Pull Server Docker Image
+
+            ```bash
+            docker pull ghcr.io/${{ needs.prepare.outputs.image_name }}:${{ needs.prepare.outputs.version }}
+            ```
+
+  server-image-build:
+    name: Build Server Image (${{ matrix.platform }})
+    needs: prepare
+    if: needs.prepare.outputs.push_image == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            APP_VERSION=${{ needs.prepare.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=cx-server-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=cx-server-${{ matrix.arch }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Export image digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+
+  server-image-merge:
+    name: Publish Multi-Arch Server Image Manifest
+    needs: [prepare, server-image-build]
+    if: needs.prepare.outputs.push_image == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: server-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest list
+        id: merge
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          MAJOR_MINOR="${{ needs.prepare.outputs.major_minor }}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          TAGS=(
+            -t "${IMAGE}:${VERSION}"
+            -t "${IMAGE}:sha-${SHORT_SHA}"
+          )
+          if [[ "${{ needs.prepare.outputs.is_prerelease }}" != "true" ]]; then
+            TAGS+=(-t "${IMAGE}:${MAJOR_MINOR}" -t "${IMAGE}:latest")
+          fi
+
+          SOURCES=()
+          for f in /tmp/digests/*; do
+            SOURCES+=("${IMAGE}@sha256:$(basename "$f")")
+          done
+
+          docker buildx imagetools create "${TAGS[@]}" "${SOURCES[@]}"
+          MANIFEST_DIGEST="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "digest=${MANIFEST_DIGEST}" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+
+      - name: Attest multi-arch container image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_name }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          push-to-registry: true

@@ -1,0 +1,27 @@
+id = "openai"
+version = "1.0.0"
+description = "OpenAI API CLI & SDK"
+
+[virtual_key]
+format = "random"
+prefix = "sk-cx-"
+length = 48
+charset = "alnum"
+
+[params]
+host = "api.openai.com"
+
+[env]
+OPENAI_API_KEY = "{{virtual_key}}"
+
+[[inject]]
+id = "openai-bearer"
+hosts = ["{{host}}"]
+mode = "bearer"
+secret = "api_key"
+
+[[presets.full]]
+effect = "allow"
+methods = ["*"]
+hosts = ["{{host}}"]
+paths = ["/**"]

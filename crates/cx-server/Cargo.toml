@@ -1,0 +1,49 @@
+[package]
+name = "cx-server"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Secretless CLI credential-injecting gateway server (HTTP control plane + QUIC data plane)"
+
+[[bin]]
+name = "cx-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+arc-swap.workspace = true
+async-trait.workspace = true
+axum = { workspace = true, features = ["query"] }
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clap.workspace = true
+cx-crypto.workspace = true
+cx-plugin.workspace = true
+cx-protocol.workspace = true
+cx-tunnel.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+ipnet.workspace = true
+jsonwebtoken.workspace = true
+quinn.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+webpki-roots.workspace = true

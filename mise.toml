@@ -1,0 +1,44 @@
+# Project-level mise tasks and development environment for `cx`
+
+[env]
+_.path = ["{{env.HOME}}/.cargo/bin"]
+
+[tasks.test]
+description = "Run all workspace unit & integration tests"
+run = "cargo test --workspace"
+
+[tasks.build]
+description = "Build release binaries (cx + cx-server)"
+run = "cargo build --release --locked --workspace"
+
+[tasks.build-cli]
+description = "Build release cx CLI binary"
+run = "cargo build --release --locked --bin cx"
+
+[tasks.build-server]
+description = "Build release cx-server binary"
+run = "cargo build --release --locked --bin cx-server"
+
+[tasks.package]
+description = "Package cx CLI release tarball + sha256 into dist/"
+run = "./scripts/package-cli.sh"
+
+[tasks.install-local]
+description = "Build release cx and register into mise (http:cx@local)"
+run = "./scripts/install-mise-local.sh"
+
+[tasks.install-local-global]
+description = "Build release cx, register into mise (http:cx@local), and activate globally"
+run = "./scripts/install-mise-local.sh --global"
+
+[tasks.docker-build]
+description = "Build local cx-server Docker image quickly using host Rust + debian:bookworm-slim"
+run = "./scripts/build-server-image.sh --fast"
+
+[tasks.docker-build-full]
+description = "Build cx-server Docker image via self-contained multi-stage Dockerfile"
+run = "./scripts/build-server-image.sh --multi-stage"
+
+[tasks.validate-providers]
+description = "Validate all built-in provider manifests"
+run = "for f in providers/*.toml; do cargo run --quiet --bin cx-server -- provider validate \"$f\"; done"

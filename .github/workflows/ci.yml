@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-test:
+    name: Rust Check & Unit Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check workspace (deny compiler warnings)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked
+
+      - name: Run workspace tests
+        run: cargo test --workspace --locked
+
+      - name: Validate built-in provider manifests
+        run: |
+          for f in providers/*.toml; do
+            cargo run --locked --bin cx-server -- provider validate "$f"
+          done
+
+  e2e-postgres:
+    name: E2E Netstack + QUIC + PostgreSQL 17
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cx
+          POSTGRES_PASSWORD: cxtestpass
+          POSTGRES_DB: cx_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run E2E against live PostgreSQL 17
+        env:
+          CX_TEST_PG_HOST: 127.0.0.1
+          CX_TEST_PG_PORT: "5432"
+          CX_TEST_PG_DB: cx_test
+          CX_TEST_PG_USER: cx
+          CX_TEST_PG_PASSWORD: cxtestpass
+        run: cargo test --locked -p cx-cli --test e2e_netstack -- --nocapture
+
+  docker-smoke:
+    name: Server Docker Image Build Check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: cx-server:ci
+          cache-from: type=gha,scope=cx-server-amd64
+          cache-to: type=gha,mode=max,scope=cx-server-amd64
+
+      - name: Smoke test cx-server container entrypoint
+        run: |
+          docker run --rm cx-server:ci --version
+          docker run --rm cx-server:ci provider list

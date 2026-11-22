@@ -1,0 +1,16 @@
+[package]
+name = "cx-tunnel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cx-protocol.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+webpki-roots.workspace = true

@@ -1,0 +1,32 @@
+id = "generic-http"
+version = "1.0.0"
+description = "Parameterized generic HTTP header/bearer credential injector"
+
+[virtual_key]
+format = "random"
+prefix = "cx_vk_"
+length = 32
+charset = "alnum"
+
+[params]
+host = { required = true }
+header = "Authorization"
+inject_scheme = "Bearer"
+env_var = "API_TOKEN"
+
+[env]
+"{{env_var}}" = "{{virtual_key}}"
+
+[[inject]]
+id = "generic-header"
+hosts = ["{{host}}"]
+mode = "header"
+header = "{{header}}"
+inject_scheme = "{{inject_scheme}}"
+secret = "token"
+
+[[presets.full]]
+effect = "allow"
+methods = ["*"]
+hosts = ["{{host}}"]
+paths = ["/**"]

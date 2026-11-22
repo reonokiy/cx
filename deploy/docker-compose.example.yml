@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cx
+      POSTGRES_PASSWORD: ${CX_POSTGRES_PASSWORD:?set CX_POSTGRES_PASSWORD}
+      POSTGRES_DB: cx
+    volumes:
+      - cx_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cx -d cx"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  cx-server:
+    image: ghcr.io/reonokiy/cx-server:${CX_SERVER_TAG:-latest}
+    # 若需从本地源码构建，取消下面注释：
+    # build:
+    #   context: ..
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      CX_MASTER_KEY: ${CX_MASTER_KEY:?set CX_MASTER_KEY (base64 32-byte AES-256 key)}
+      CX_POSTGRES_PASSWORD: ${CX_POSTGRES_PASSWORD:?set CX_POSTGRES_PASSWORD}
+      CX_OIDC_CLIENT_SECRET: ${CX_OIDC_CLIENT_SECRET:-}
+      # 按实际 profile 中 [secrets.*] 的 env 变量名透传真实上游密钥：
+      REAL_GITHUB_TOKEN: ${REAL_GITHUB_TOKEN:-}
+    ports:
+      # 控制面 HTTP（仅绑定本机，交由宿主机 Nginx/Caddy 做 L7 TLS 终结与反向代理）
+      - "127.0.0.1:8080:8080/tcp"
+      # 数据面 QUIC（原生 UDP，可由 Nginx stream 或宿主机直接对外转发）
+      - "8443:8443/udp"
+    volumes:
+      - ./server.toml:/etc/cx/server.toml:ro
+      - ./profiles:/etc/cx/profiles:ro
+      - ./providers:/etc/cx/providers:ro
+      - ./certs:/etc/cx/certs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  cx_pg_data:
