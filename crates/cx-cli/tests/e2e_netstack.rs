@@ -756,14 +756,24 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
     let fallback = LocalFallbackProxy::start(Arc::clone(&router), "nonce123").await.unwrap();
     assert_ne!(fallback.addr.port(), 0);
 
-    // Verify audit logs were written in store
-    assert!(
-        running.store.count_audit_logs().await.unwrap() >= 4,
-        "expected audit logs for Tier 1 allow/deny and Tier 2 server_tunnel"
-    );
-
+    // Close client tunnel cleanly so in-flight L4 server_tunnel streams flush their closing audit rows
     let _ = shutdown_tx.send(true);
     let _ = stack_task.await;
     tunnel.close();
+
+    // Verify audit logs were written in store (4 Tier-1 L7 allow/deny rows + Tier-2 L4 server_tunnel row)
+    let mut audit_count = 0;
+    for _ in 0..40 {
+        audit_count = running.store.count_audit_logs().await.unwrap();
+        if audit_count >= 5 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        audit_count >= 4,
+        "expected >= 4 audit logs for Tier 1 allow/deny and Tier 2 server_tunnel, got {audit_count}"
+    );
+
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

@@ -178,8 +178,17 @@ impl TunnelHandler for DataPlaneHandler {
                     "host '{}' is not allowed for L7 processing on profile '{}'",
                     meta.host, session.profile.name
                 );
+                self.record_l7_audit(
+                    &session,
+                    &meta,
+                    "deny",
+                    Some(403),
+                    "deny",
+                    Some(reason.clone()),
+                    started,
+                )
+                .await;
                 let _ = write_l7_error(&mut send, 403, "HOST_NOT_ALLOWED", &reason).await;
-                self.record_l7_audit(&session, &meta, "deny", Some(403), "deny", Some(reason), started).await;
                 return;
             }
         };
@@ -191,17 +200,17 @@ impl TunnelHandler for DataPlaneHandler {
                 .policy
                 .evaluate(&meta.method, &meta.host, &meta.path_and_query)
         {
-            let _ = write_l7_error(&mut send, 403, "POLICY_DENIED", &reason).await;
             self.record_l7_audit(
                 &session,
                 &meta,
                 route_tier,
                 Some(403),
                 "deny",
-                Some(reason),
+                Some(reason.clone()),
                 started,
             )
             .await;
+            let _ = write_l7_error(&mut send, 403, "POLICY_DENIED", &reason).await;
             return;
         }
 
@@ -257,17 +266,17 @@ impl TunnelHandler for DataPlaneHandler {
                 {
                     Ok(m) => m,
                     Err(e) => {
-                        let _ = write_l7_error(&mut send, 502, "SECRET_UNAVAILABLE", &e).await;
                         self.record_l7_audit(
                             &session,
                             &meta,
                             route_tier,
                             Some(502),
                             "deny",
-                            Some(e),
+                            Some(e.clone()),
                             started,
                         )
                         .await;
+                        let _ = write_l7_error(&mut send, 502, "SECRET_UNAVAILABLE", &e).await;
                         return;
                     }
                 };
@@ -284,17 +293,17 @@ impl TunnelHandler for DataPlaneHandler {
                         Ok(InjectionOutcome::NoMatchingCredentialPresented) => {}
                         Err(e) => {
                             let msg = e.to_string();
-                            let _ = write_l7_error(&mut send, 403, "INVALID_VIRTUAL_KEY", &msg).await;
                             self.record_l7_audit(
                                 &session,
                                 &meta,
                                 route_tier,
                                 Some(403),
                                 "deny",
-                                Some(msg),
+                                Some(msg.clone()),
                                 started,
                             )
                             .await;
+                            let _ = write_l7_error(&mut send, 403, "INVALID_VIRTUAL_KEY", &msg).await;
                             return;
                         }
                     }
@@ -320,16 +329,7 @@ impl TunnelHandler for DataPlaneHandler {
                     ));
                 }
 
-                let resp_meta = ResponseMeta {
-                    status,
-                    headers: resp_headers,
-                    cx_error: None,
-                };
-                if write_frame(&mut send, &resp_meta).await.is_ok() {
-                    let _ = send.write_all(&scrubbed_body).await;
-                    let _ = send.finish();
-                }
-
+                // Commit audit log before completing the QUIC response stream so audit visibility is synchronous.
                 self.record_l7_audit(
                     &session,
                     &meta,
@@ -340,20 +340,30 @@ impl TunnelHandler for DataPlaneHandler {
                     started,
                 )
                 .await;
+
+                let resp_meta = ResponseMeta {
+                    status,
+                    headers: resp_headers,
+                    cx_error: None,
+                };
+                if write_frame(&mut send, &resp_meta).await.is_ok() {
+                    let _ = send.write_all(&scrubbed_body).await;
+                    let _ = send.finish();
+                }
             }
             Err(err) => {
                 let msg = err.to_string();
-                let _ = write_l7_error(&mut send, 502, "UPSTREAM_ERROR", &msg).await;
                 self.record_l7_audit(
                     &session,
                     &meta,
                     route_tier,
                     Some(502),
                     "deny",
-                    Some(msg),
+                    Some(msg.clone()),
                     started,
                 )
                 .await;
+                let _ = write_l7_error(&mut send, 502, "UPSTREAM_ERROR", &msg).await;
             }
         }
     }
@@ -372,35 +382,17 @@ impl TunnelHandler for DataPlaneHandler {
                 "L4 server_tunnel denied for {}:{} on profile '{}'",
                 meta.host, meta.port, session.profile.name
             );
+            self.record_l4_audit(&session, &meta, "deny", Some(reason.clone()), started)
+                .await;
             let _ = write_frame(
                 &mut send,
                 &ConnectAck {
                     ok: false,
-                    error: Some(CxGatewayError::new("L4_DENIED", reason.clone())),
+                    error: Some(CxGatewayError::new("L4_DENIED", reason)),
                 },
             )
             .await;
             let _ = send.finish();
-            let _ = self
-                .store
-                .record_audit(&AuditEvent {
-                    occurred_at: Utc::now().timestamp(),
-                    user_id: session.claims.uid.clone(),
-                    user_email: session.claims.email.clone(),
-                    session_id: session.claims.sid.clone(),
-                    profile_name: session.profile.name.clone(),
-                    route_tier: "server_tunnel".into(),
-                    target_host: meta.host,
-                    target_port: meta.port,
-                    http_method: None,
-                    http_path: None,
-                    status_code: None,
-                    decision: "deny".into(),
-                    deny_reason: Some(reason),
-                    client_ip: session.claims.client_ip.clone(),
-                    latency_ms: started.elapsed().as_millis() as u64,
-                })
-                .await;
             return;
         }
 
@@ -408,35 +400,17 @@ impl TunnelHandler for DataPlaneHandler {
             Ok(s) => s,
             Err(e) => {
                 let reason = e.to_string();
+                self.record_l4_audit(&session, &meta, "deny", Some(reason.clone()), started)
+                    .await;
                 let _ = write_frame(
                     &mut send,
                     &ConnectAck {
                         ok: false,
-                        error: Some(CxGatewayError::new("UPSTREAM_DIAL_FAILED", reason.clone())),
+                        error: Some(CxGatewayError::new("UPSTREAM_DIAL_FAILED", reason)),
                     },
                 )
                 .await;
                 let _ = send.finish();
-                let _ = self
-                    .store
-                    .record_audit(&AuditEvent {
-                        occurred_at: Utc::now().timestamp(),
-                        user_id: session.claims.uid.clone(),
-                        user_email: session.claims.email.clone(),
-                        session_id: session.claims.sid.clone(),
-                        profile_name: session.profile.name.clone(),
-                        route_tier: "server_tunnel".into(),
-                        target_host: meta.host,
-                        target_port: meta.port,
-                        http_method: None,
-                        http_path: None,
-                        status_code: None,
-                        decision: "deny".into(),
-                        deny_reason: Some(reason),
-                        client_ip: session.claims.client_ip.clone(),
-                        latency_ms: started.elapsed().as_millis() as u64,
-                    })
-                    .await;
                 return;
             }
         };
@@ -452,28 +426,9 @@ impl TunnelHandler for DataPlaneHandler {
         let c2s = tokio::io::copy(&mut recv, &mut up_w);
         let s2c = tokio::io::copy(&mut up_r, &mut send);
         let _ = tokio::join!(c2s, s2c);
-        let _ = send.finish();
-
-        let _ = self
-            .store
-            .record_audit(&AuditEvent {
-                occurred_at: Utc::now().timestamp(),
-                user_id: session.claims.uid.clone(),
-                user_email: session.claims.email.clone(),
-                session_id: session.claims.sid.clone(),
-                profile_name: session.profile.name.clone(),
-                route_tier: "server_tunnel".into(),
-                target_host: meta.host,
-                target_port: meta.port,
-                http_method: None,
-                http_path: None,
-                status_code: None,
-                decision: "allow".into(),
-                deny_reason: None,
-                client_ip: session.claims.client_ip.clone(),
-                latency_ms: started.elapsed().as_millis() as u64,
-            })
+        self.record_l4_audit(&session, &meta, "allow", None, started)
             .await;
+        let _ = send.finish();
     }
 }
 
@@ -568,7 +523,7 @@ impl DataPlaneHandler {
             .map(|(p, _)| p)
             .unwrap_or(&meta.path_and_query)
             .to_string();
-        let _ = self
+        if let Err(e) = self
             .store
             .record_audit(&AuditEvent {
                 occurred_at: Utc::now().timestamp(),
@@ -587,7 +542,43 @@ impl DataPlaneHandler {
                 client_ip: session.claims.client_ip.clone(),
                 latency_ms: started.elapsed().as_millis() as u64,
             })
-            .await;
+            .await
+        {
+            warn!(error = %e, host = %meta.host, "failed to persist L7 audit event");
+        }
+    }
+
+    async fn record_l4_audit(
+        &self,
+        session: &AuthenticatedSession,
+        meta: &ConnectMeta,
+        decision: &str,
+        deny_reason: Option<String>,
+        started: Instant,
+    ) {
+        if let Err(e) = self
+            .store
+            .record_audit(&AuditEvent {
+                occurred_at: Utc::now().timestamp(),
+                user_id: session.claims.uid.clone(),
+                user_email: session.claims.email.clone(),
+                session_id: session.claims.sid.clone(),
+                profile_name: session.profile.name.clone(),
+                route_tier: "server_tunnel".into(),
+                target_host: meta.host.clone(),
+                target_port: meta.port,
+                http_method: None,
+                http_path: None,
+                status_code: None,
+                decision: decision.to_string(),
+                deny_reason,
+                client_ip: session.claims.client_ip.clone(),
+                latency_ms: started.elapsed().as_millis() as u64,
+            })
+            .await
+        {
+            warn!(error = %e, host = %meta.host, "failed to persist L4 audit event");
+        }
     }
 }
 
