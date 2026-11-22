@@ -26,9 +26,10 @@ services:
         condition: service_healthy
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-      CX_MASTER_KEY: ${CX_MASTER_KEY:?set CX_MASTER_KEY (base64 32-byte AES-256 key)}
       CX_POSTGRES_PASSWORD: ${CX_POSTGRES_PASSWORD:?set CX_POSTGRES_PASSWORD}
       CX_OIDC_CLIENT_SECRET: ${CX_OIDC_CLIENT_SECRET:-}
+      # 仅在使用 [secrets.*] source = "db" 时需要（32-byte base64，openssl rand -base64 32）：
+      CX_MASTER_KEY: ${CX_MASTER_KEY:-}
       # 按实际 profile 中 [secrets.*] 的 env 变量名透传真实上游密钥：
       REAL_GITHUB_TOKEN: ${REAL_GITHUB_TOKEN:-}
     ports:

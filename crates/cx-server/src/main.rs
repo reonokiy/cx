@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use cx_crypto::{EnvelopeCipher, EphemeralCa, generate_random_token};
+use cx_crypto::{EphemeralCa, generate_random_token};
 use cx_plugin::{HostPatternValidator, ProviderRegistry};
 use cx_server::config::ServerFileConfig;
 use cx_server::start_server;
@@ -89,7 +89,6 @@ async fn main() -> anyhow::Result<()> {
             fs::write(&cert_path, cert_pem)?;
             fs::write(&key_path, key_pem)?;
 
-            let (_, master_b64) = EnvelopeCipher::generate_random();
             let dev_token = generate_random_token("cx_dev_", 32);
             let server_cfg_path = dir.join("server.toml");
             let profile_cfg_path = dir.join("profiles/github-ro.toml");
@@ -107,10 +106,7 @@ server_name = "localhost"
 cert = "./quic-cert.pem"
 key = "./quic-key.pem"
 
-[storage]
-master_key_inline = "{master_b64}"
-
-[storage.postgres]
+[postgres]
 host = "127.0.0.1"
 port = 5432
 database = "cx"

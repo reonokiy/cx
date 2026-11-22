@@ -562,6 +562,11 @@ async fn upsert_secret(
         .store
         .upsert_encrypted_secret(&req.name, &req.scope, owner, &req.fields)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| match e {
+            crate::store::StoreError::MasterKeyNotConfigured => {
+                (StatusCode::SERVICE_UNAVAILABLE, e.to_string())
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }

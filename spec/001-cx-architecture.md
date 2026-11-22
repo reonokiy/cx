@@ -517,10 +517,7 @@ client_secret_env = "CX_OIDC_CLIENT_SECRET"
 groups_claim = "groups"                  # 支持点路径，如 "realm_access.roles"
 admin_groups = ["cx-admins"]
 
-[storage]
-master_key_env = "CX_MASTER_KEY"         # 32-byte base64 主密钥（信封加密 KEK）
-
-[storage.postgres]
+[postgres]
 host = "127.0.0.1"
 port = 5432
 database = "cx"
@@ -532,6 +529,8 @@ max_connections = 16
 [security]
 block_private_ips = true
 session_ttl_secs = 900
+# 仅在 Profile 使用 [secrets.*] source = "db" 时按需配置（默认读环境变量 CX_MASTER_KEY）
+# master_key_env = "CX_MASTER_KEY"
 
 [dirs]
 providers = "./providers"                # 外部服务插件目录（与内置插件合并，同名覆盖）

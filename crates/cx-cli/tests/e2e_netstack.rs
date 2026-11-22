@@ -9,13 +9,13 @@ use cx_cli::dns::{FakeIpDns, build_a_query};
 use cx_cli::netstack::{AsyncPacketIo, ChannelPacketIo, build_ipv4_udp_packet, run_netstack};
 use cx_cli::proxy_fallback::LocalFallbackProxy;
 use cx_cli::router::TrafficRouter;
-use cx_crypto::{EnvelopeCipher, EphemeralCa, VirtualKeyCharset, VirtualKeyFormat, VirtualKeySpec};
+use cx_crypto::{EphemeralCa, VirtualKeyCharset, VirtualKeyFormat, VirtualKeySpec};
 use cx_plugin::{PolicyEffect, PolicyRuleConfig, SecretBinding};
 use cx_protocol::{CreateSessionRequest, CreateSessionResponse, DefaultRouteAction};
 use cx_server::config::{
     BootstrapUserConfig, DirsConfig, HttpConfig, PostgresConfig, ProfileAllowConfig,
     ProfileFileConfig, ProfilePolicyConfig, ProfileRoutingOverride, QuicConfig, SecurityConfig,
-    ServerFileConfig, StorageConfig,
+    ServerFileConfig,
 };
 use cx_server::store::{MemoryStore, PostgresStore, ServerStore};
 use cx_server::start_server_with_store;
@@ -418,7 +418,6 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
     std::fs::write(&quic_cert_path, &quic_cert_pem).unwrap();
     std::fs::write(&quic_key_path, &quic_key_pem).unwrap();
 
-    let (cipher, master_b64) = EnvelopeCipher::generate_random();
     let mut upstream_overrides = BTreeMap::new();
     upstream_overrides.insert("api.github.com".into(), gh_addr.to_string());
     upstream_overrides.insert("objects.githubusercontent.com".into(), cdn_addr.to_string());
@@ -484,16 +483,14 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
             max_concurrent_bidi_streams: 64,
         },
         oidc: None,
-        storage: StorageConfig {
-            postgres: PostgresConfig::default(),
-            master_key_env: "UNUSED".into(),
-            master_key_inline: Some(master_b64),
-        },
+        postgres: PostgresConfig::default(),
         security: SecurityConfig {
             block_private_ips: true,
             allow_private_cidrs: vec![],
             allow_private_targets: false,
             session_ttl_secs: 600,
+            master_key_env: "UNUSED".into(),
+            master_key_inline: None,
             upstream_overrides,
             extra_upstream_ca_pem: Some(gh_ca_pem.clone()),
         },
@@ -536,12 +533,12 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
             max_connections: 8,
         };
         Arc::new(
-            PostgresStore::connect(&pg_cfg, cipher)
+            PostgresStore::connect(&pg_cfg, None)
                 .await
                 .expect("failed connecting to live test PostgreSQL"),
         )
     } else {
-        Arc::new(MemoryStore::new(cipher))
+        Arc::new(MemoryStore::new(None))
     };
 
     let running = start_server_with_store(server_cfg, store).await.unwrap();

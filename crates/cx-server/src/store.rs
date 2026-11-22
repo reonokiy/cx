@@ -24,6 +24,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("crypto error: {0}")]
     Crypto(#[from] cx_crypto::envelope::CryptoError),
+    #[error("database secret encryption is not configured (set CX_MASTER_KEY or [security].master_key_env)")]
+    MasterKeyNotConfigured,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +129,8 @@ pub trait ServerStore: Send + Sync {
         profile_name: &str,
     ) -> Result<Vec<String>, StoreError>;
 
+    fn has_master_key(&self) -> bool;
+
     async fn upsert_encrypted_secret(
         &self,
         name: &str,
@@ -153,13 +157,13 @@ pub trait ServerStore: Send + Sync {
 
 pub struct PostgresStore {
     pool: PgPool,
-    cipher: EnvelopeCipher,
+    cipher: Option<EnvelopeCipher>,
 }
 
 impl PostgresStore {
     pub async fn connect(
         pg: &PostgresConfig,
-        cipher: EnvelopeCipher,
+        cipher: Option<EnvelopeCipher>,
     ) -> Result<Self, StoreError> {
         let ssl_mode = match pg.ssl_mode {
             PostgresSslMode::Disable => PgSslMode::Disable,
@@ -481,6 +485,10 @@ impl ServerStore for PostgresStore {
         Ok(rows.into_iter().map(|r| r.get("key_hash")).collect())
     }
 
+    fn has_master_key(&self) -> bool {
+        self.cipher.is_some()
+    }
+
     async fn upsert_encrypted_secret(
         &self,
         name: &str,
@@ -488,8 +496,12 @@ impl ServerStore for PostgresStore {
         owner_user_id: Option<&str>,
         fields: &BTreeMap<String, String>,
     ) -> Result<(), StoreError> {
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(StoreError::MasterKeyNotConfigured)?;
         let json = serde_json::to_string(fields)?;
-        let blob = self.cipher.encrypt_secret(&SecretString::from(json))?;
+        let blob = cipher.encrypt_secret(&SecretString::from(json))?;
         let now = Utc::now().timestamp();
 
         sqlx::query(
@@ -517,6 +529,10 @@ impl ServerStore for PostgresStore {
         scope: &str,
         owner_user_id: Option<&str>,
     ) -> Result<Option<BTreeMap<String, SecretString>>, StoreError> {
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(StoreError::MasterKeyNotConfigured)?;
         let row = sqlx::query(
             "SELECT blob FROM secrets WHERE name = $1 AND scope = $2 AND owner_user_id = $3",
         )
@@ -530,7 +546,7 @@ impl ServerStore for PostgresStore {
             return Ok(None);
         };
         let blob: Json<EncryptedSecretBlob> = r.get("blob");
-        let pt = self.cipher.decrypt_secret(&blob.0)?;
+        let pt = cipher.decrypt_secret(&blob.0)?;
         let raw_map: BTreeMap<String, String> =
             serde_json::from_str(secrecy::ExposeSecret::expose_secret(&pt))?;
         Ok(Some(
@@ -618,11 +634,11 @@ struct MemInner {
 /// Production `cx-server serve` always uses `PostgresStore`.
 pub struct MemoryStore {
     inner: Mutex<MemInner>,
-    cipher: EnvelopeCipher,
+    cipher: Option<EnvelopeCipher>,
 }
 
 impl MemoryStore {
-    pub fn new(cipher: EnvelopeCipher) -> Self {
+    pub fn new(cipher: Option<EnvelopeCipher>) -> Self {
         Self {
             inner: Mutex::new(MemInner::default()),
             cipher,
@@ -804,6 +820,10 @@ impl ServerStore for MemoryStore {
             .collect())
     }
 
+    fn has_master_key(&self) -> bool {
+        self.cipher.is_some()
+    }
+
     async fn upsert_encrypted_secret(
         &self,
         name: &str,
@@ -811,8 +831,12 @@ impl ServerStore for MemoryStore {
         owner_user_id: Option<&str>,
         fields: &BTreeMap<String, String>,
     ) -> Result<(), StoreError> {
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(StoreError::MasterKeyNotConfigured)?;
         let json = serde_json::to_string(fields)?;
-        let blob = self.cipher.encrypt_secret(&SecretString::from(json))?;
+        let blob = cipher.encrypt_secret(&SecretString::from(json))?;
         self.inner.lock().unwrap().secrets.insert(
             (
                 name.into(),
@@ -830,6 +854,10 @@ impl ServerStore for MemoryStore {
         scope: &str,
         owner_user_id: Option<&str>,
     ) -> Result<Option<BTreeMap<String, SecretString>>, StoreError> {
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(StoreError::MasterKeyNotConfigured)?;
         let blob = self
             .inner
             .lock()
@@ -844,7 +872,7 @@ impl ServerStore for MemoryStore {
         let Some(blob) = blob else {
             return Ok(None);
         };
-        let pt = self.cipher.decrypt_secret(&blob)?;
+        let pt = cipher.decrypt_secret(&blob)?;
         let raw_map: BTreeMap<String, String> =
             serde_json::from_str(secrecy::ExposeSecret::expose_secret(&pt))?;
         Ok(Some(

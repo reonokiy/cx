@@ -16,7 +16,7 @@ pub struct ServerFileConfig {
     #[serde(default)]
     pub oidc: Option<OidcConfig>,
     #[serde(default)]
-    pub storage: StorageConfig,
+    pub postgres: PostgresConfig,
     #[serde(default)]
     pub security: SecurityConfig,
     #[serde(default)]
@@ -109,26 +109,6 @@ fn default_groups_claim() -> String {
     "groups".into()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StorageConfig {
-    #[serde(default)]
-    pub postgres: PostgresConfig,
-    #[serde(default = "default_master_key_env")]
-    pub master_key_env: String,
-    #[serde(default)]
-    pub master_key_inline: Option<String>,
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            postgres: PostgresConfig::default(),
-            master_key_env: default_master_key_env(),
-            master_key_inline: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PostgresSslMode {
@@ -142,6 +122,7 @@ pub enum PostgresSslMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PostgresConfig {
     #[serde(default = "default_pg_host")]
     pub host: String,
@@ -208,6 +189,7 @@ fn default_master_key_env() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
     pub block_private_ips: bool,
@@ -217,6 +199,13 @@ pub struct SecurityConfig {
     pub allow_private_targets: bool,
     #[serde(default = "default_session_ttl")]
     pub session_ttl_secs: u64,
+    /// Optional env var name holding a 32-byte base64 AES-256-GCM KEK.
+    /// Only required when using `[secrets.*] source = "db"` or `POST /v1/secrets`.
+    #[serde(default = "default_master_key_env")]
+    pub master_key_env: String,
+    /// Optional inline base64 master key (intended for automated tests only).
+    #[serde(default)]
+    pub master_key_inline: Option<String>,
     /// Optional host -> "ip:port" dial overrides (for automated tests).
     #[serde(default)]
     pub upstream_overrides: BTreeMap<String, String>,
@@ -232,6 +221,8 @@ impl Default for SecurityConfig {
             allow_private_cidrs: vec![],
             allow_private_targets: false,
             session_ttl_secs: 900,
+            master_key_env: default_master_key_env(),
+            master_key_inline: None,
             upstream_overrides: BTreeMap::new(),
             extra_upstream_ca_pem: None,
         }
@@ -359,7 +350,7 @@ impl ProfileFileConfig {
 }
 
 impl ServerFileConfig {
-    /// Load `server.toml`, resolving relative `dirs.*` / `quic.*` / `storage.*` paths
+    /// Load `server.toml`, resolving relative `dirs.*` / `quic.*` paths
     /// against the directory containing `server.toml`, and loading all `profiles/*.toml`.
     pub fn load_from_path(path: &Path) -> anyhow::Result<Self> {
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -411,5 +402,52 @@ fn resolve_rel(base: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         base.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_top_level_postgres_and_optional_security_master_key_env() {
+        let raw = r#"
+[http]
+listen = "127.0.0.1:8080"
+external_url = "https://cx.example.com"
+
+[quic]
+listen = "0.0.0.0:8443"
+public_addr = "cx.example.com:8443"
+cert = "./cert.pem"
+key = "./key.pem"
+
+[postgres]
+host = "db.internal"
+port = 5432
+database = "cx"
+username = "cx"
+"#;
+        let cfg: ServerFileConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.postgres.host, "db.internal");
+        assert_eq!(cfg.postgres.password_env, "CX_POSTGRES_PASSWORD");
+        assert_eq!(cfg.security.master_key_env, "CX_MASTER_KEY");
+        assert!(cfg.security.master_key_inline.is_none());
+
+        let with_custom_env = format!(
+            "{raw}\n[security]\nmaster_key_env = \"CUSTOM_KEK\"\n"
+        );
+        let cfg2: ServerFileConfig = toml::from_str(&with_custom_env).unwrap();
+        assert_eq!(cfg2.security.master_key_env, "CUSTOM_KEK");
+
+        // Legacy `[storage]` section must be rejected by deny_unknown_fields
+        let legacy = format!("{raw}\n[storage]\nmaster_key_env = \"CX_MASTER_KEY\"\n");
+        assert!(toml::from_str::<ServerFileConfig>(&legacy).is_err());
+
+        // Ensure shipped deployment example configs stay in sync with ServerFileConfig
+        let _: ServerFileConfig =
+            toml::from_str(include_str!("../../../deploy/server.toml.example")).unwrap();
+        let _: ServerFileConfig =
+            toml::from_str(include_str!("../../../deploy/server.docker.toml.example")).unwrap();
     }
 }

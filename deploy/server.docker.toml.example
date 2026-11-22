@@ -23,10 +23,7 @@ client_secret_env = "CX_OIDC_CLIENT_SECRET"
 groups_claim = "groups"
 admin_groups = ["cx-admins"]
 
-[storage]
-master_key_env = "CX_MASTER_KEY"
-
-[storage.postgres]
+[postgres]
 host = "postgres"
 port = 5432
 database = "cx"
@@ -38,6 +35,8 @@ max_connections = 16
 [security]
 block_private_ips = true
 session_ttl_secs = 900
+# 仅在 Profile 使用 [secrets.*] source = "db" 或调用 POST /v1/secrets 时按需配置：
+# master_key_env = "CX_MASTER_KEY"
 
 [dirs]
 providers = "/etc/cx/providers"

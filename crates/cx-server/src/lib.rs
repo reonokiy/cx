@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cx_crypto::{EnvelopeCipher, HotReloadCertResolver, SessionSigner};
-use cx_plugin::{HostPatternValidator, ProviderRegistry, ResolvedProfile};
+use cx_plugin::{HostPatternValidator, ProviderRegistry, ResolvedProfile, SecretBinding};
 use cx_tunnel::{QuicTuning, QuicTunnelServer};
 use ipnet::IpNet;
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::ServerFileConfig;
 use crate::controlplane::{ControlPlaneState, build_router};
@@ -35,7 +35,7 @@ pub struct RunningServer {
 pub async fn start_server(cfg: ServerFileConfig) -> anyhow::Result<RunningServer> {
     let cipher = resolve_cipher(&cfg)?;
     let store: Arc<dyn ServerStore> =
-        Arc::new(PostgresStore::connect(&cfg.storage.postgres, cipher).await?);
+        Arc::new(PostgresStore::connect(&cfg.postgres, cipher).await?);
     start_server_with_store(cfg, store).await
 }
 
@@ -81,6 +81,18 @@ pub async fn start_server_with_store(
     let mut resolved_profiles: BTreeMap<String, Arc<ResolvedProfile>> = BTreeMap::new();
     for pcfg in &cfg.profiles {
         let resolved = registry.resolve_profile(&pcfg.to_profile_spec())?;
+        if !store.has_master_key() {
+            for (field, binding) in &resolved.secret_bindings {
+                if matches!(binding, SecretBinding::Db { .. }) {
+                    anyhow::bail!(
+                        "profile '{}' binds [secrets.{}] to source = \"db\", which requires a 32-byte base64 master key in env '{}' (generate with: openssl rand -base64 32)",
+                        resolved.name,
+                        field,
+                        cfg.security.master_key_env
+                    );
+                }
+            }
+        }
         info!(
             profile = %resolved.name,
             provider = %resolved.provider_id,
@@ -202,16 +214,102 @@ pub async fn start_server_with_store(
     })
 }
 
-pub fn resolve_cipher(cfg: &ServerFileConfig) -> anyhow::Result<EnvelopeCipher> {
-    if let Some(b64) = &cfg.storage.master_key_inline {
-        Ok(EnvelopeCipher::from_base64(b64)?)
-    } else if let Ok(b64) = std::env::var(&cfg.storage.master_key_env) {
-        Ok(EnvelopeCipher::from_base64(b64.trim())?)
-    } else {
-        warn!(
-            env = %cfg.storage.master_key_env,
-            "master key env not set; using ephemeral in-memory master key (dev only!)"
+/// Resolve optional AES-256-GCM master key (KEK) from `[security].master_key_inline`
+/// or `[security].master_key_env` (default `CX_MASTER_KEY`).
+/// Returns `Ok(None)` cleanly when unset — only required when using DB-stored secrets (`source = "db"`).
+pub fn resolve_cipher(cfg: &ServerFileConfig) -> anyhow::Result<Option<EnvelopeCipher>> {
+    if let Some(b64) = &cfg.security.master_key_inline {
+        let trimmed = b64.trim();
+        if !trimmed.is_empty() {
+            return Ok(Some(EnvelopeCipher::from_base64(trimmed)?));
+        }
+    }
+    if let Ok(b64) = std::env::var(&cfg.security.master_key_env) {
+        let trimmed = b64.trim();
+        if !trimmed.is_empty() {
+            return Ok(Some(EnvelopeCipher::from_base64(trimmed)?));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        DirsConfig, HttpConfig, PostgresConfig, ProfileAllowConfig, ProfileFileConfig,
+        ProfilePolicyConfig, ProfileRoutingOverride, QuicConfig, SecurityConfig,
+    };
+    use crate::store::MemoryStore;
+    use cx_plugin::SecretScope;
+
+    #[tokio::test]
+    async fn db_secret_requires_master_key_while_env_secret_does_not() {
+        let cfg = ServerFileConfig {
+            http: HttpConfig {
+                listen: "127.0.0.1:0".into(),
+                external_url: "http://127.0.0.1".into(),
+                trusted_proxies: vec![],
+            },
+            quic: QuicConfig {
+                listen: "127.0.0.1:0".into(),
+                public_addr: "127.0.0.1:0".into(),
+                server_name: Some("localhost".into()),
+                cert: "/nonexistent/cert.pem".into(),
+                key: "/nonexistent/key.pem".into(),
+                cert_reload_secs: 0,
+                keep_alive_secs: 15,
+                max_idle_timeout_secs: 60,
+                max_concurrent_bidi_streams: 64,
+            },
+            oidc: None,
+            postgres: PostgresConfig::default(),
+            security: SecurityConfig {
+                master_key_env: "CX_TEST_UNSET_MASTER_KEY_999".into(),
+                ..SecurityConfig::default()
+            },
+            dirs: DirsConfig {
+                providers: None,
+                profiles: None,
+                enable_builtin_providers: true,
+            },
+            bootstrap_users: vec![],
+            profiles: vec![ProfileFileConfig {
+                name: "github-db".into(),
+                provider: "github".into(),
+                params: BTreeMap::new(),
+                secrets: BTreeMap::from([(
+                    "token".into(),
+                    SecretBinding::Db {
+                        scope: SecretScope::Shared,
+                        name: "github-shared".into(),
+                        field: None,
+                    },
+                )]),
+                virtual_key: None,
+                allow: ProfileAllowConfig {
+                    groups: vec!["eng".into()],
+                    users: vec![],
+                },
+                routing: ProfileRoutingOverride::default(),
+                policy: ProfilePolicyConfig {
+                    preset: Some("readonly".into()),
+                    rules: vec![],
+                },
+                allow_insecure_http: false,
+            }],
+        };
+
+        assert!(resolve_cipher(&cfg).unwrap().is_none());
+
+        let store: Arc<dyn ServerStore> = Arc::new(MemoryStore::new(None));
+        let err = start_server_with_store(cfg, store)
+            .await
+            .err()
+            .expect("expected startup to fail without master key when using source=db");
+        assert!(
+            err.to_string().contains("CX_TEST_UNSET_MASTER_KEY_999"),
+            "unexpected error: {err:#}"
         );
-        Ok(EnvelopeCipher::generate_random().0)
     }
 }
