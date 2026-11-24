@@ -53,6 +53,7 @@ import type { AppRoute } from "@/hooks/use-hash-route"
 import { getErrorMessage, type AuditEntry } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { formatLatency, formatRelativeTime } from "@/lib/format"
+import { useI18n } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 import { cn } from "@/lib/utils"
 
@@ -60,31 +61,40 @@ interface OverviewPageProps {
   onNavigate: (route: AppRoute, params?: Record<string, string>) => void
 }
 
-const latencyChartConfig = {
-  latency: {
-    label: "耗时 (ms)",
-    color: "var(--foreground)",
-  },
-} satisfies ChartConfig
-
-const hostChartConfig = {
-  allow: {
-    label: "允许",
-    color: "var(--foreground)",
-  },
-  deny: {
-    label: "拒绝",
-    color: "var(--destructive)",
-  },
-} satisfies ChartConfig
-
 export function OverviewPage({ onNavigate }: OverviewPageProps) {
   const { session, refreshContext } = useAuth()
   const { activeProfile, activeProfileMeta, setCreateDialogOpen } =
     useActiveProfile()
+  const { locale, t } = useI18n()
   const recentAudit = useRecentAuditQuery(activeProfile)
   const [chartTab, setChartTab] = useState<"latency" | "hosts">("latency")
   const [selectedEvent, setSelectedEvent] = useState<AuditEntry | null>(null)
+
+  const latencyChartConfig = useMemo(
+    () =>
+      ({
+        latency: {
+          label: t("overview.chartLatencyLabel"),
+          color: "var(--foreground)",
+        },
+      }) satisfies ChartConfig,
+    [t]
+  )
+
+  const hostChartConfig = useMemo(
+    () =>
+      ({
+        allow: {
+          label: t("common.allow"),
+          color: "var(--foreground)",
+        },
+        deny: {
+          label: t("common.deny"),
+          color: "var(--destructive)",
+        },
+      }) satisfies ChartConfig,
+    [t]
+  )
 
   const events = recentAudit.data?.events ?? []
   const platforms = activeProfileMeta?.platforms ?? []
@@ -140,25 +150,27 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
   if (!activeProfileMeta) {
     return (
       <div className="flex flex-col gap-5">
-        <PageHeader title="概览" />
+        <PageHeader title={t("nav.overview")} />
         <Card className="shadow-xs">
           <Empty className="border-0 py-16">
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <Blocks />
               </EmptyMedia>
-              <EmptyTitle className="text-base">尚未创建 Profile</EmptyTitle>
+              <EmptyTitle className="text-base">
+                {t("overview.emptyTitle")}
+              </EmptyTitle>
               <EmptyDescription>
                 {session.context.admin
-                  ? "创建一个 Profile，并按需挂载 GitHub、OpenAI 或自定义 HTTP 等上游平台。"
-                  : "当前账号暂无被授权访问的 Profile，请联系管理员分配。"}
+                  ? t("overview.emptyAdmin")
+                  : t("overview.emptyMember")}
               </EmptyDescription>
             </EmptyHeader>
             {session.context.admin && (
               <EmptyContent>
                 <Button size="sm" onClick={() => setCreateDialogOpen(true)}>
                   <Plus />
-                  新建第一个 Profile
+                  {t("overview.createFirst")}
                 </Button>
               </EmptyContent>
             )}
@@ -171,7 +183,7 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
-        title="概览"
+        title={t("nav.overview")}
         description={activeProfileMeta.description || undefined}
         actions={
           <Button
@@ -185,7 +197,7 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
             <RefreshCw
               className={recentAudit.isFetching ? "animate-spin" : undefined}
             />
-            刷新
+            {t("common.refresh")}
           </Button>
         }
       />
@@ -200,7 +212,9 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
       {/* Key Metrics */}
       <div className="grid grid-cols-2 overflow-hidden rounded-xl border bg-card shadow-xs sm:grid-cols-4 sm:divide-x">
         <div className="space-y-1 p-4 sm:p-5">
-          <p className="text-xs text-muted-foreground">近期请求</p>
+          <p className="text-xs text-muted-foreground">
+            {t("overview.metricRecent")}
+          </p>
           {recentAudit.isLoading ? (
             <Skeleton className="h-7 w-14" />
           ) : (
@@ -209,12 +223,16 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
             </p>
           )}
           <p className="text-xs text-muted-foreground">
-            {stats.allowRate !== null ? `放行率 ${stats.allowRate}%` : "暂无样本"}
+            {stats.allowRate !== null
+              ? t("overview.metricAllowRate", { rate: stats.allowRate })
+              : t("overview.metricNoSamples")}
           </p>
         </div>
 
         <div className="space-y-1 border-l p-4 sm:border-l-0 sm:p-5">
-          <p className="text-xs text-muted-foreground">策略拒绝</p>
+          <p className="text-xs text-muted-foreground">
+            {t("overview.metricDenied")}
+          </p>
           {recentAudit.isLoading ? (
             <Skeleton className="h-7 w-14" />
           ) : (
@@ -228,12 +246,16 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
             </p>
           )}
           <p className="text-xs text-muted-foreground">
-            {stats.deny > 0 ? "存在拦截事件" : "近期无拦截"}
+            {stats.deny > 0
+              ? t("overview.metricHasDenies")
+              : t("overview.metricNoDenies")}
           </p>
         </div>
 
         <div className="space-y-1 border-t p-4 sm:border-t-0 sm:p-5">
-          <p className="text-xs text-muted-foreground">平均耗时</p>
+          <p className="text-xs text-muted-foreground">
+            {t("overview.metricAvgLatency")}
+          </p>
           {recentAudit.isLoading ? (
             <Skeleton className="h-7 w-20" />
           ) : (
@@ -243,20 +265,24 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
           )}
           <p className="text-xs text-muted-foreground tabular-nums">
             {stats.maxLatency !== null
-              ? `峰值 ${formatLatency(stats.maxLatency)}`
-              : "等待请求"}
+              ? t("overview.metricPeakLatency", {
+                  value: formatLatency(stats.maxLatency),
+                })
+              : t("overview.metricWaiting")}
           </p>
         </div>
 
         <div className="space-y-1 border-l border-t p-4 sm:border-l-0 sm:border-t-0 sm:p-5">
-          <p className="text-xs text-muted-foreground">已挂载平台</p>
+          <p className="text-xs text-muted-foreground">
+            {t("overview.metricPlatforms")}
+          </p>
           <p className="text-2xl font-semibold tracking-tight tabular-nums">
             {platforms.length}
           </p>
           <p className="text-xs text-muted-foreground">
             {activeProfileMeta.fallback === "deny"
-              ? "严格白名单模式"
-              : "兜底客户端直连"}
+              ? t("overview.fallbackWhitelist")
+              : t("overview.fallbackPassthrough")}
           </p>
         </div>
       </div>
@@ -265,9 +291,11 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
       <Card className="shadow-xs">
         <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
           <div>
-            <CardTitle className="text-sm font-medium">已挂载平台</CardTitle>
+            <CardTitle className="text-sm font-medium">
+              {t("overview.mountedPlatforms")}
+            </CardTitle>
             <CardDescription className="text-xs">
-              各平台凭据、虚拟密钥与访问规则按域名独立隔离
+              {t("overview.mountedPlatformsDesc")}
             </CardDescription>
           </div>
           <Button
@@ -276,7 +304,9 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
             className="h-7 text-xs text-muted-foreground hover:text-foreground"
             onClick={() => onNavigate("platforms")}
           >
-            {session.context.admin ? "管理平台与规则" : "查看平台与凭据"}
+            {session.context.admin
+              ? t("overview.managePlatforms")
+              : t("overview.viewPlatforms")}
             <ArrowRight className="size-3.5" />
           </Button>
         </CardHeader>
@@ -284,16 +314,16 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
           {platforms.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-8 text-center">
               <p className="text-xs text-muted-foreground">
-                该 Profile 尚未挂载任何平台。
+                {t("overview.noPlatforms")}
               </p>
               {session.context.admin && (
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => onNavigate("platforms", { add: "1" })}
+                  onClick={() => onNavigate("platforms")}
                 >
                   <Plus />
-                  添加平台
+                  {t("overview.addPlatform")}
                 </Button>
               )}
             </div>
@@ -301,8 +331,6 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {platforms.map((plat) => {
                 const missingSecret = plat.secrets.some((s) => !s.configured)
-                const allConfigured =
-                  plat.secrets.length > 0 && !missingSecret
                 return (
                   <button
                     key={plat.id}
@@ -338,16 +366,14 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
                           "shrink-0 text-[11px]",
                           missingSecret
                             ? "text-warning"
-                            : allConfigured
-                              ? "text-muted-foreground"
-                              : "text-muted-foreground"
+                            : "text-muted-foreground"
                         )}
                       >
                         {plat.secrets.length === 0
-                          ? "无需凭据"
+                          ? t("overview.secretNone")
                           : missingSecret
-                            ? "待填凭据"
-                            : "凭据就绪"}
+                            ? t("overview.secretPending")
+                            : t("overview.secretReady")}
                       </span>
                     </div>
 
@@ -369,9 +395,11 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
 
                     <div className="mt-auto flex items-center justify-between pt-0.5 text-[11px] text-muted-foreground">
                       <span>
-                        {plat.preset ? `预设 ${plat.preset}` : "无预设"}
+                        {plat.preset
+                          ? t("overview.presetLabel", { name: plat.preset })
+                          : t("overview.noPreset")}
                         {plat.custom_rule_count > 0
-                          ? ` · ${plat.custom_rule_count} 条规则`
+                          ? ` · ${t("overview.ruleCount", { count: plat.custom_rule_count })}`
                           : ""}
                       </span>
                       <ArrowRight className="size-3 opacity-0 transition-opacity group-hover:opacity-100" />
@@ -388,11 +416,17 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
       <Card className="shadow-xs">
         <CardHeader className="flex flex-row items-center justify-between gap-3 pb-2">
           <div className="space-y-0.5">
-            <CardTitle className="text-sm font-medium">流量指标</CardTitle>
+            <CardTitle className="text-sm font-medium">
+              {t("overview.trafficTitle")}
+            </CardTitle>
             <CardDescription className="text-xs tabular-nums">
               {stats.total > 0
-                ? `最近 ${stats.total} 条请求 · 平均 ${formatLatency(stats.avgLatency ?? 0)} · 峰值 ${formatLatency(stats.maxLatency ?? 0)}`
-                : "暂无请求样本"}
+                ? t("overview.trafficSummary", {
+                    total: stats.total,
+                    avg: formatLatency(stats.avgLatency ?? 0),
+                    max: formatLatency(stats.maxLatency ?? 0),
+                  })
+                : t("overview.trafficEmpty")}
             </CardDescription>
           </div>
           <Tabs
@@ -401,10 +435,10 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
           >
             <TabsList className="h-8">
               <TabsTrigger value="latency" className="px-2.5 text-xs">
-                请求耗时
+                {t("overview.chartLatency")}
               </TabsTrigger>
               <TabsTrigger value="hosts" className="px-2.5 text-xs">
-                主机分布
+                {t("overview.chartHosts")}
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -414,7 +448,7 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
             <Skeleton className="h-[200px] w-full rounded-lg" />
           ) : events.length === 0 ? (
             <div className="flex h-[180px] items-center justify-center text-xs text-muted-foreground">
-              当前 Profile 产生请求后将自动呈现趋势图表
+              {t("overview.chartEmpty")}
             </div>
           ) : chartTab === "latency" ? (
             <ChartContainer
@@ -508,14 +542,16 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
       {/* Recent Requests */}
       <Card className="overflow-hidden shadow-xs">
         <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-          <CardTitle className="text-sm font-medium">最近请求</CardTitle>
+          <CardTitle className="text-sm font-medium">
+            {t("overview.recentRequests")}
+          </CardTitle>
           <Button
             variant="ghost"
             size="sm"
             className="h-7 text-xs text-muted-foreground hover:text-foreground"
             onClick={() => onNavigate("audit")}
           >
-            全部日志
+            {t("overview.allLogs")}
             <ArrowRight className="size-3.5" />
           </Button>
         </CardHeader>
@@ -529,7 +565,7 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
             </div>
           ) : events.length === 0 ? (
             <div className="px-5 py-10 text-center text-xs text-muted-foreground">
-              暂无近期请求记录
+              {t("overview.noRecentRequests")}
             </div>
           ) : (
             <div className="overflow-x-auto border-t">
@@ -537,22 +573,22 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
                 <TableHeader>
                   <TableRow className="bg-muted/30 hover:bg-muted/30">
                     <TableHead className="w-[100px] pl-5 text-xs font-medium text-muted-foreground">
-                      平台
+                      {t("overview.colPlatform")}
                     </TableHead>
                     <TableHead className="text-xs font-medium text-muted-foreground">
-                      请求
+                      {t("overview.colRequest")}
                     </TableHead>
                     <TableHead className="text-xs font-medium text-muted-foreground">
-                      用户
+                      {t("overview.colUser")}
                     </TableHead>
                     <TableHead className="text-xs font-medium text-muted-foreground">
-                      判定
+                      {t("overview.colDecision")}
                     </TableHead>
                     <TableHead className="text-right text-xs font-medium text-muted-foreground">
-                      耗时
+                      {t("overview.colLatency")}
                     </TableHead>
                     <TableHead className="pr-5 text-right text-xs font-medium text-muted-foreground">
-                      时间
+                      {t("overview.colTime")}
                     </TableHead>
                   </TableRow>
                 </TableHeader>
@@ -598,7 +634,7 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
                         {formatLatency(ev.latency_ms)}
                       </TableCell>
                       <TableCell className="pr-5 text-right text-xs text-muted-foreground">
-                        {formatRelativeTime(ev.occurred_at)}
+                        {formatRelativeTime(ev.occurred_at, locale)}
                       </TableCell>
                     </TableRow>
                   ))}

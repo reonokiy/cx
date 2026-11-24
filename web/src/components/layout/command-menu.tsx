@@ -2,6 +2,7 @@ import {
   Activity,
   Blocks,
   Check,
+  Languages,
   Layers,
   LayoutDashboard,
   LogOut,
@@ -22,6 +23,7 @@ import {
 } from "@/components/ui/command"
 import type { AppRoute } from "@/hooks/use-hash-route"
 import { useAuth } from "@/lib/auth"
+import { useI18n } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 import { useTheme } from "@/lib/theme"
 
@@ -44,6 +46,7 @@ export function CommandMenu({
     setCreateDialogOpen,
   } = useActiveProfile()
   const { resolvedTheme, setTheme } = useTheme()
+  const { locale, setLocale, t } = useI18n()
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -68,19 +71,26 @@ export function CommandMenu({
     <CommandDialog
       open={open}
       onOpenChange={onOpenChange}
-      title="快捷命令"
-      description="切换 Profile 或跳转到页面"
+      title={t("cmd.title")}
+      description={t("cmd.description")}
     >
-      <CommandInput placeholder="搜索 Profile、页面或操作…" />
+      <CommandInput placeholder={t("cmd.inputPlaceholder")} />
       <CommandList>
-        <CommandEmpty>未找到匹配项。</CommandEmpty>
+        <CommandEmpty>{t("cmd.empty")}</CommandEmpty>
 
-        {profiles.length > 0 && (
+        {(profiles.length > 0 || context.admin) && (
           <>
-            <CommandGroup heading="切换 Profile">
+            <CommandGroup heading={t("cmd.groupProfiles")}>
               {profiles.map((prof) => (
                 <CommandItem
                   key={`switch-${prof.name}`}
+                  value={`profile ${prof.name}`}
+                  keywords={[
+                    prof.name,
+                    "profile",
+                    ...prof.platforms.map((p) => p.id),
+                    ...prof.platforms.map((p) => p.provider_name),
+                  ]}
                   onSelect={() => {
                     setActiveProfile(prof.name)
                     onOpenChange(false)
@@ -88,9 +98,11 @@ export function CommandMenu({
                 >
                   <Layers />
                   <span className="font-mono text-xs">{prof.name}</span>
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    {prof.platforms.map((p) => p.id).join(" · ")}
-                  </span>
+                  {prof.platforms.length > 0 && (
+                    <span className="ml-2 truncate text-xs text-muted-foreground">
+                      {prof.platforms.map((p) => p.id).join(" · ")}
+                    </span>
+                  )}
                   {prof.name === activeProfile && (
                     <Check className="ml-auto size-3.5" />
                   )}
@@ -98,13 +110,15 @@ export function CommandMenu({
               ))}
               {context.admin && (
                 <CommandItem
+                  value="new-profile"
+                  keywords={["new", "create", "profile", "新建", "创建"]}
                   onSelect={() => {
                     onOpenChange(false)
                     setCreateDialogOpen(true)
                   }}
                 >
                   <Plus />
-                  <span>新建 Profile</span>
+                  <span>{t("cmd.newProfile")}</span>
                 </CommandItem>
               )}
             </CommandGroup>
@@ -112,44 +126,97 @@ export function CommandMenu({
           </>
         )}
 
-        <CommandGroup heading="页面">
-          <CommandItem onSelect={() => go("overview")}>
+        <CommandGroup heading={t("cmd.groupPages")}>
+          <CommandItem
+            value="overview"
+            keywords={["overview", "dashboard", "home", "概览", "首页"]}
+            onSelect={() => go("overview")}
+          >
             <LayoutDashboard />
-            <span>概览</span>
+            <span>{t("nav.overview")}</span>
           </CommandItem>
-          <CommandItem onSelect={() => go("platforms")}>
+          <CommandItem
+            value="platforms"
+            keywords={[
+              "platforms",
+              "providers",
+              "rules",
+              "policy",
+              "secrets",
+              "平台",
+              "规则",
+              "凭据",
+            ]}
+            onSelect={() => go("platforms")}
+          >
             <Blocks />
-            <span>平台与规则</span>
+            <span>{t("nav.platforms")}</span>
           </CommandItem>
-          <CommandItem onSelect={() => go("audit")}>
+          <CommandItem
+            value="audit"
+            keywords={["audit", "logs", "events", "审计", "日志"]}
+            onSelect={() => go("audit")}
+          >
             <Activity />
-            <span>审计日志</span>
+            <span>{t("nav.audit")}</span>
           </CommandItem>
-          <CommandItem onSelect={() => go("settings")}>
+          <CommandItem
+            value="settings"
+            keywords={[
+              "settings",
+              "tokens",
+              "keys",
+              "virtual",
+              "pat",
+              "设置",
+              "令牌",
+              "密钥",
+            ]}
+            onSelect={() => go("settings")}
+          >
             <SlidersHorizontal />
-            <span>设置与令牌</span>
+            <span>{t("nav.settings")}</span>
           </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
-        <CommandGroup heading="系统">
+        <CommandGroup heading={t("cmd.groupSystem")}>
           <CommandItem
+            value="toggle-language"
+            keywords={["language", "locale", "english", "chinese", "语言", "中文", "英文"]}
+            onSelect={() => {
+              setLocale(locale === "zh-CN" ? "en" : "zh-CN")
+              onOpenChange(false)
+            }}
+          >
+            <Languages />
+            <span>{t("cmd.switchLanguage")}</span>
+          </CommandItem>
+          <CommandItem
+            value="toggle-theme"
+            keywords={["theme", "dark", "light", "主题", "深色", "浅色"]}
             onSelect={() => {
               setTheme(resolvedTheme === "dark" ? "light" : "dark")
               onOpenChange(false)
             }}
           >
             {resolvedTheme === "dark" ? <Sun /> : <Moon />}
-            <span>{resolvedTheme === "dark" ? "浅色模式" : "深色模式"}</span>
+            <span>
+              {resolvedTheme === "dark"
+                ? t("cmd.switchToLight")
+                : t("cmd.switchToDark")}
+            </span>
           </CommandItem>
           <CommandItem
+            value="sign-out"
+            keywords={["logout", "sign out", "退出", "登出"]}
             onSelect={() => {
               onOpenChange(false)
               void signOut()
             }}
           >
             <LogOut />
-            <span>退出登录</span>
+            <span>{t("sidebar.signOut")}</span>
           </CommandItem>
         </CommandGroup>
       </CommandList>

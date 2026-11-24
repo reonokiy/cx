@@ -40,6 +40,7 @@ pub struct UserRecord {
     pub oidc_subject: String,
     pub email: String,
     pub display_name: String,
+    pub avatar_url: Option<String>,
     pub groups: Vec<String>,
     pub status: String,
 }
@@ -127,6 +128,7 @@ pub trait ServerStore: Send + Sync {
         subject: &str,
         email: &str,
         display_name: &str,
+        avatar_url: Option<&str>,
         groups: &[String],
     ) -> Result<UserRecord, StoreError>;
 
@@ -352,6 +354,7 @@ impl ServerStore for PostgresStore {
         subject: &str,
         email: &str,
         display_name: &str,
+        avatar_url: Option<&str>,
         groups: &[String],
     ) -> Result<UserRecord, StoreError> {
         let now = Utc::now().timestamp();
@@ -360,14 +363,15 @@ impl ServerStore for PostgresStore {
 
         let row = sqlx::query(
             r#"
-            INSERT INTO users (id, oidc_issuer, oidc_subject, email, display_name, groups, status, created_at, last_login_at)
-            VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7)
+            INSERT INTO users (id, oidc_issuer, oidc_subject, email, display_name, avatar_url, groups, status, created_at, last_login_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $8)
             ON CONFLICT (oidc_issuer, oidc_subject) DO UPDATE SET
                 email = EXCLUDED.email,
                 display_name = EXCLUDED.display_name,
+                avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
                 groups = EXCLUDED.groups,
                 last_login_at = EXCLUDED.last_login_at
-            RETURNING id, status
+            RETURNING id, status, avatar_url
             "#,
         )
         .bind(&new_id)
@@ -375,6 +379,7 @@ impl ServerStore for PostgresStore {
         .bind(subject)
         .bind(email)
         .bind(display_name)
+        .bind(avatar_url)
         .bind(Json(&groups_vec))
         .bind(now)
         .fetch_one(&self.pool)
@@ -386,6 +391,7 @@ impl ServerStore for PostgresStore {
             oidc_subject: subject.to_string(),
             email: email.to_string(),
             display_name: display_name.to_string(),
+            avatar_url: row.get("avatar_url"),
             groups: groups_vec,
             status: row.get("status"),
         })
@@ -393,7 +399,7 @@ impl ServerStore for PostgresStore {
 
     async fn get_user_by_id(&self, user_id: &str) -> Result<Option<UserRecord>, StoreError> {
         let row = sqlx::query(
-            "SELECT id, oidc_issuer, oidc_subject, email, display_name, groups, status FROM users WHERE id = $1",
+            "SELECT id, oidc_issuer, oidc_subject, email, display_name, avatar_url, groups, status FROM users WHERE id = $1",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
@@ -407,6 +413,7 @@ impl ServerStore for PostgresStore {
                 oidc_subject: r.get("oidc_subject"),
                 email: r.get("email"),
                 display_name: r.get("display_name"),
+                avatar_url: r.get("avatar_url"),
                 groups: groups.0,
                 status: r.get("status"),
             }
@@ -459,7 +466,7 @@ impl ServerStore for PostgresStore {
         let row = sqlx::query(
             r#"
             SELECT t.allowed_profiles, t.expires_at, t.revoked_at,
-                   u.id, u.oidc_issuer, u.oidc_subject, u.email, u.display_name, u.groups, u.status
+                   u.id, u.oidc_issuer, u.oidc_subject, u.email, u.display_name, u.avatar_url, u.groups, u.status
             FROM access_tokens t
             JOIN users u ON u.id = t.user_id
             WHERE t.token_hash = $1
@@ -488,6 +495,7 @@ impl ServerStore for PostgresStore {
                 oidc_subject: r.get("oidc_subject"),
                 email: r.get("email"),
                 display_name: r.get("display_name"),
+                avatar_url: r.get("avatar_url"),
                 groups: groups.0,
                 status,
             },
@@ -1152,6 +1160,7 @@ impl ServerStore for MemoryStore {
         subject: &str,
         email: &str,
         display_name: &str,
+        avatar_url: Option<&str>,
         groups: &[String],
     ) -> Result<UserRecord, StoreError> {
         let mut st = self.inner.lock().unwrap();
@@ -1161,17 +1170,20 @@ impl ServerStore for MemoryStore {
             .entry(key)
             .or_insert_with(|| Uuid::new_v4().to_string())
             .clone();
-        let status = st
-            .users
-            .get(&id)
+        let existing = st.users.get(&id);
+        let status = existing
             .map(|u| u.status.clone())
             .unwrap_or_else(|| "active".to_string());
+        let merged_avatar = avatar_url
+            .map(ToString::to_string)
+            .or_else(|| existing.and_then(|u| u.avatar_url.clone()));
         let rec = UserRecord {
             id: id.clone(),
             oidc_issuer: issuer.to_string(),
             oidc_subject: subject.to_string(),
             email: email.to_string(),
             display_name: display_name.to_string(),
+            avatar_url: merged_avatar,
             groups: groups.to_vec(),
             status,
         };

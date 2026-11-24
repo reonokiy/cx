@@ -39,6 +39,7 @@ import {
 import { useRevokeSessionMutation } from "@/hooks/use-console-queries"
 import { getErrorMessage, type AuditEntry } from "@/lib/api"
 import { formatDateTime, formatLatency, formatRelativeTime } from "@/lib/format"
+import { useI18n } from "@/lib/i18n"
 
 interface AuditDetailSheetProps {
   event: AuditEntry | null
@@ -51,11 +52,13 @@ function DetailRow({
   value,
   mono = false,
   copyValue,
+  copyLabel,
 }: {
   label: string
   value: React.ReactNode
   mono?: boolean
   copyValue?: string
+  copyLabel?: string
 }) {
   return (
     <div className="flex items-start justify-between gap-3 py-2 text-sm">
@@ -68,7 +71,7 @@ function DetailRow({
         >
           {value}
         </span>
-        {copyValue && <CopyButton value={copyValue} label={`复制${label}`} />}
+        {copyValue && <CopyButton value={copyValue} label={copyLabel} />}
       </div>
     </div>
   )
@@ -79,6 +82,7 @@ export function AuditDetailSheet({
   onClose,
   onQuickFilter,
 }: AuditDetailSheetProps) {
+  const { locale, t } = useI18n()
   const [confirmRevoke, setConfirmRevoke] = useState(false)
   const revokeSession = useRevokeSessionMutation()
 
@@ -90,7 +94,7 @@ export function AuditDetailSheet({
     if (!event) return
     try {
       await revokeSession.mutateAsync(event.session_id)
-      toast.success(`已吊销会话 ${event.session_id}`)
+      toast.success(t("auditDetail.toastRevoked", { id: event.session_id }))
       setConfirmRevoke(false)
     } catch (err) {
       toast.error(getErrorMessage(err))
@@ -117,8 +121,8 @@ export function AuditDetailSheet({
                   {event.target_port !== 443 ? `:${event.target_port}` : ""}
                 </SheetTitle>
                 <SheetDescription className="tabular-nums">
-                  {formatDateTime(event.occurred_at)}（
-                  {formatRelativeTime(event.occurred_at)}）
+                  {formatDateTime(event.occurred_at, locale)} (
+                  {formatRelativeTime(event.occurred_at, locale)})
                 </SheetDescription>
               </SheetHeader>
 
@@ -127,7 +131,7 @@ export function AuditDetailSheet({
                   {event.deny_reason && (
                     <Alert variant="destructive">
                       <ShieldAlert />
-                      <AlertTitle>策略拒绝原因</AlertTitle>
+                      <AlertTitle>{t("auditDetail.denyReason")}</AlertTitle>
                       <AlertDescription className="break-all font-mono text-xs">
                         {event.deny_reason}
                       </AlertDescription>
@@ -139,40 +143,48 @@ export function AuditDetailSheet({
                     <div className="flex items-center justify-between">
                       <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                         <Globe className="size-3.5" />
-                        请求详情
+                        {t("auditDetail.requestDetails")}
                       </h3>
                       <CopyButton
                         value={requestLine}
-                        label="复制请求行"
+                        label={t("auditDetail.copyRequestLine")}
                         size="xs"
                         variant="outline"
                         showLabel
                       />
                     </div>
-                    <div className="rounded-lg border bg-muted/30 px-3.5 py-1 divide-y">
+                    <div className="divide-y rounded-lg border bg-muted/30 px-3.5 py-1">
                       <DetailRow
-                        label="目标主机"
+                        label={t("auditDetail.targetHost")}
                         value={`${event.target_host}:${event.target_port}`}
                         mono
                         copyValue={event.target_host}
+                        copyLabel={t("auditDetail.copyLabel", {
+                          label: t("auditDetail.targetHost"),
+                        })}
                       />
                       <DetailRow
-                        label="HTTP 方法"
-                        value={event.http_method ?? "TCP（L4 透传）"}
+                        label={t("auditDetail.httpMethod")}
+                        value={
+                          event.http_method ?? t("auditDetail.tcpPassthrough")
+                        }
                         mono
                       />
                       <DetailRow
-                        label="请求路径"
+                        label={t("auditDetail.requestPath")}
                         value={event.http_path ?? "—"}
                         mono
                         copyValue={event.http_path ?? undefined}
+                        copyLabel={t("auditDetail.copyLabel", {
+                          label: t("auditDetail.requestPath"),
+                        })}
                       />
                       <DetailRow
-                        label="上游状态码"
+                        label={t("auditDetail.upstreamStatus")}
                         value={<StatusCodeBadge code={event.status_code} />}
                       />
                       <DetailRow
-                        label="处理耗时"
+                        label={t("auditDetail.latency")}
                         value={formatLatency(event.latency_ms)}
                         mono
                       />
@@ -183,41 +195,50 @@ export function AuditDetailSheet({
                   <div className="space-y-2">
                     <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       <User className="size-3.5" />
-                      身份与路由上下文
+                      {t("auditDetail.identityRouting")}
                     </h3>
-                    <div className="rounded-lg border bg-muted/30 px-3.5 py-1 divide-y">
+                    <div className="divide-y rounded-lg border bg-muted/30 px-3.5 py-1">
                       <DetailRow
-                        label="用户邮箱"
+                        label={t("auditDetail.userEmail")}
                         value={event.user_email}
                         copyValue={event.user_email}
+                        copyLabel={t("auditDetail.copyLabel", {
+                          label: t("auditDetail.userEmail"),
+                        })}
                       />
                       <DetailRow
-                        label="Profile"
+                        label={t("auditDetail.profile")}
                         value={event.profile_name}
                         mono
                       />
                       {event.platform_id && (
                         <DetailRow
-                          label="平台"
+                          label={t("auditDetail.platform")}
                           value={event.platform_id}
                           mono
                         />
                       )}
                       <DetailRow
-                        label="路由层级"
+                        label={t("auditDetail.routeTier")}
                         value={<RouteTierBadge tier={event.route_tier} />}
                       />
                       <DetailRow
-                        label="客户端 IP"
+                        label={t("auditDetail.clientIp")}
                         value={event.client_ip}
                         mono
                         copyValue={event.client_ip}
+                        copyLabel={t("auditDetail.copyLabel", {
+                          label: t("auditDetail.clientIp"),
+                        })}
                       />
                       <DetailRow
-                        label="会话 ID"
+                        label={t("auditDetail.sessionId")}
                         value={event.session_id}
                         mono
                         copyValue={event.session_id}
+                        copyLabel={t("auditDetail.copyLabel", {
+                          label: t("auditDetail.sessionId"),
+                        })}
                       />
                     </div>
                   </div>
@@ -228,7 +249,7 @@ export function AuditDetailSheet({
                       <div className="space-y-2.5">
                         <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                           <Filter className="size-3.5" />
-                          快捷筛选
+                          {t("auditDetail.quickFilter")}
                         </h3>
                         <div className="flex flex-wrap gap-2">
                           <Button
@@ -240,7 +261,7 @@ export function AuditDetailSheet({
                             }
                           >
                             <Globe className="size-3.5" />
-                            仅看此主机
+                            {t("auditDetail.onlyThisHost")}
                           </Button>
                           <Button
                             type="button"
@@ -251,7 +272,7 @@ export function AuditDetailSheet({
                             }
                           >
                             <Network className="size-3.5" />
-                            追踪此会话
+                            {t("auditDetail.traceSession")}
                           </Button>
                         </div>
                       </div>
@@ -262,9 +283,11 @@ export function AuditDetailSheet({
 
                   <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/25 bg-destructive/5 p-3.5">
                     <div className="space-y-0.5">
-                      <p className="text-xs font-medium">安全响应 · 吊销会话</p>
+                      <p className="text-xs font-medium">
+                        {t("auditDetail.revokeTitle")}
+                      </p>
                       <p className="text-[11px] text-muted-foreground">
-                        立即将该会话加入吊销列表，阻断后续 QUIC 请求。
+                        {t("auditDetail.revokeDesc")}
                       </p>
                     </div>
                     <Button
@@ -275,7 +298,7 @@ export function AuditDetailSheet({
                       disabled={revokeSession.isPending}
                     >
                       <Ban className="size-3.5" />
-                      吊销会话
+                      {t("auditDetail.revokeButton")}
                     </Button>
                   </div>
                 </div>
@@ -288,18 +311,20 @@ export function AuditDetailSheet({
       <AlertDialog open={confirmRevoke} onOpenChange={setConfirmRevoke}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>确认吊销此会话？</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("auditDetail.revokeConfirmTitle")}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              会话{" "}
+              {t("auditDetail.revokeConfirmBefore")}{" "}
               <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
                 {event?.session_id}
               </code>{" "}
-              将被服务端立即吊销，持有该会话令牌的客户端连接将无法继续代理请求。此操作无法撤销。
+              {t("auditDetail.revokeConfirmAfter")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={revokeSession.isPending}>
-              取消
+              {t("common.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(e) => {
@@ -309,7 +334,9 @@ export function AuditDetailSheet({
               disabled={revokeSession.isPending}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {revokeSession.isPending ? "正在吊销…" : "确认吊销"}
+              {revokeSession.isPending
+                ? t("auditDetail.revoking")
+                : t("auditDetail.confirmRevoke")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

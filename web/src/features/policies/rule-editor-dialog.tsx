@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { CheckCircle2, Plus, ShieldAlert } from "lucide-react"
-import { useEffect } from "react"
+import { useEffect, useMemo } from "react"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { Badge } from "@/components/ui/badge"
@@ -16,6 +16,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import type { PolicyEffect, PolicyRule } from "@/lib/api"
+import { useI18n } from "@/lib/i18n"
 import { describePolicyRule } from "@/lib/policy-matcher"
 import { cn } from "@/lib/utils"
 
@@ -39,25 +40,12 @@ function splitLines(raw: string): string[] {
     .filter(Boolean)
 }
 
-const lineListSchema = z
-  .string()
-  .refine(
-    (val) => splitLines(val).length <= 100,
-    "每项最多填写 100 条匹配模式"
-  )
-  .refine(
-    (val) => splitLines(val).every((item) => item.length <= 1024),
-    "单条匹配模式长度不能超过 1024 个字符"
-  )
-
-const ruleFormSchema = z.object({
-  effect: z.enum(["allow", "deny"]),
-  methods: z.array(z.string()).max(100, "最多选择 100 个方法"),
-  hostsText: lineListSchema,
-  pathsText: lineListSchema,
-})
-
-type RuleFormValues = z.infer<typeof ruleFormSchema>
+interface RuleFormValues {
+  effect: "allow" | "deny"
+  methods: string[]
+  hostsText: string
+  pathsText: string
+}
 
 interface RuleEditorDialogProps {
   open: boolean
@@ -74,6 +62,24 @@ export function RuleEditorDialog({
   onOpenChange,
   onSubmitRule,
 }: RuleEditorDialogProps) {
+  const { locale, t } = useI18n()
+
+  const ruleFormSchema = useMemo(() => {
+    const lineListSchema = z
+      .string()
+      .refine((val) => splitLines(val).length <= 100, t("rule.errMaxPatterns"))
+      .refine(
+        (val) => splitLines(val).every((item) => item.length <= 1024),
+        t("rule.errMaxLen")
+      )
+    return z.object({
+      effect: z.enum(["allow", "deny"]),
+      methods: z.array(z.string()).max(100, t("rule.errMaxMethods")),
+      hostsText: lineListSchema,
+      pathsText: lineListSchema,
+    })
+  }, [t])
+
   const form = useForm<RuleFormValues>({
     resolver: zodResolver(ruleFormSchema),
     defaultValues: {
@@ -142,16 +148,16 @@ export function RuleEditorDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{rule ? "编辑访问规则" : "新建访问规则"}</DialogTitle>
-          <DialogDescription>
-            配置 HTTP 方法、目标主机和路径 Glob 模式。字段留空表示匹配任意值。
-          </DialogDescription>
+          <DialogTitle>
+            {rule ? t("rule.editTitle") : t("rule.newTitle")}
+          </DialogTitle>
+          <DialogDescription>{t("rule.dialogDesc")}</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={form.handleSubmit(handleSave)} className="space-y-5">
           {/* Effect Selector Cards */}
           <div className="space-y-2">
-            <Label>规则动作</Label>
+            <Label>{t("rule.action")}</Label>
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
@@ -172,9 +178,11 @@ export function RuleEditorDialog({
                   )}
                 />
                 <div className="space-y-0.5">
-                  <div className="text-sm font-medium">拒绝 (Deny)</div>
+                  <div className="text-sm font-medium">
+                    {t("rule.denyLabel")}
+                  </div>
                   <p className="text-xs text-muted-foreground">
-                    最高优先级，命中即拦截
+                    {t("rule.denyDesc")}
                   </p>
                 </div>
               </button>
@@ -198,9 +206,11 @@ export function RuleEditorDialog({
                   )}
                 />
                 <div className="space-y-0.5">
-                  <div className="text-sm font-medium">允许 (Allow)</div>
+                  <div className="text-sm font-medium">
+                    {t("rule.allowLabel")}
+                  </div>
                   <p className="text-xs text-muted-foreground">
-                    未命中拒绝时放行请求
+                    {t("rule.allowDesc")}
                   </p>
                 </div>
               </button>
@@ -210,9 +220,11 @@ export function RuleEditorDialog({
           {/* HTTP Method Chips */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label>HTTP 方法</Label>
+              <Label>{t("rule.methods")}</Label>
               <span className="text-xs text-muted-foreground">
-                {methods.length === 0 ? "未选即匹配任意方法" : `已选 ${methods.length} 项`}
+                {methods.length === 0
+                  ? t("rule.methodsAny")
+                  : t("rule.methodsSelected", { count: methods.length })}
               </span>
             </div>
             <div className="flex flex-wrap gap-1.5">
@@ -227,7 +239,7 @@ export function RuleEditorDialog({
                     onClick={() => toggleMethod(method)}
                     className="font-mono text-xs"
                   >
-                    {method === "*" ? "* (全部)" : method}
+                    {method === "*" ? t("rule.methodAll") : method}
                   </Button>
                 )
               })}
@@ -237,9 +249,9 @@ export function RuleEditorDialog({
           {/* Target Hosts */}
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <Label htmlFor="rule-hosts">目标主机（每行一个）</Label>
+              <Label htmlFor="rule-hosts">{t("rule.hosts")}</Label>
               <span className="text-xs text-muted-foreground">
-                支持精确域名或 *.example.com
+                {t("rule.hostsHint")}
               </span>
             </div>
             <Textarea
@@ -257,7 +269,7 @@ export function RuleEditorDialog({
             {suggestedHosts.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[11px] text-muted-foreground">
-                  快速填入当前 Profile 域名：
+                  {t("rule.quickHosts")}
                 </span>
                 {suggestedHosts.map((host) => (
                   <Badge
@@ -282,9 +294,9 @@ export function RuleEditorDialog({
           {/* Path Globs */}
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <Label htmlFor="rule-paths">路径 Glob（每行一个）</Label>
+              <Label htmlFor="rule-paths">{t("rule.paths")}</Label>
               <span className="text-xs text-muted-foreground">
-                支持 *、**、? 通配符（不含查询参数）
+                {t("rule.pathsHint")}
               </span>
             </div>
             <Textarea
@@ -301,7 +313,7 @@ export function RuleEditorDialog({
             )}
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-[11px] text-muted-foreground">
-                常用模板：
+                {t("rule.pathPresets")}
               </span>
               {PATH_PRESETS.map((pattern) => (
                 <Badge
@@ -324,8 +336,10 @@ export function RuleEditorDialog({
 
           {/* Live Rule Preview */}
           <div className="rounded-lg border bg-muted/40 px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">
-            <span className="mr-1.5 font-medium text-foreground">规则预览：</span>
-            {describePolicyRule(previewRule)}
+            <span className="mr-1.5 font-medium text-foreground">
+              {t("rule.preview")}
+            </span>
+            {describePolicyRule(previewRule, locale)}
           </div>
 
           <DialogFooter>
@@ -334,9 +348,9 @@ export function RuleEditorDialog({
               variant="outline"
               onClick={() => onOpenChange(false)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
-            <Button type="submit">应用到草稿</Button>
+            <Button type="submit">{t("rule.applyDraft")}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

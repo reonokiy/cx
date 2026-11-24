@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge"
+import { useI18n, type MessageKey } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 
 export function DecisionBadge({
@@ -8,6 +9,8 @@ export function DecisionBadge({
   decision: string
   className?: string
 }) {
+  const { t } = useI18n()
+
   if (decision === "allow") {
     return (
       <span
@@ -17,7 +20,7 @@ export function DecisionBadge({
         )}
       >
         <span className="size-1.5 rounded-full bg-success" aria-hidden="true" />
-        允许
+        {t("common.allow")}
       </span>
     )
   }
@@ -34,7 +37,7 @@ export function DecisionBadge({
           className="size-1.5 rounded-full bg-destructive"
           aria-hidden="true"
         />
-        拒绝
+        {t("common.deny")}
       </Badge>
     )
   }
@@ -101,12 +104,12 @@ export function StatusCodeBadge({
   )
 }
 
-const ROUTE_TIER_LABELS: Record<string, string> = {
-  inject: "L7 注入",
-  server_tunnel: "L4 透传",
-  server_http_passthrough: "HTTP 透传",
-  client_passthrough: "直连",
-  deny: "拒绝",
+const ROUTE_TIER_KEYS: Record<string, MessageKey> = {
+  inject: "tier.inject",
+  server_tunnel: "tier.server_tunnel",
+  server_http_passthrough: "tier.server_http_passthrough",
+  client_passthrough: "tier.client_passthrough",
+  deny: "tier.deny",
 }
 
 export function RouteTierBadge({
@@ -116,9 +119,11 @@ export function RouteTierBadge({
   tier: string
   className?: string
 }) {
+  const { t } = useI18n()
+  const key = ROUTE_TIER_KEYS[tier]
   return (
     <span className={cn("text-xs text-muted-foreground", className)}>
-      {ROUTE_TIER_LABELS[tier] ?? tier}
+      {key ? t(key) : tier}
     </span>
   )
 }

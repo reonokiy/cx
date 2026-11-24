@@ -1,46 +1,87 @@
 import type { AuditEntry } from "@/lib/api"
+import { getCurrentLocale, translate, type Locale } from "@/lib/i18n"
 
-const fullDateFormatter = new Intl.DateTimeFormat("zh-CN", {
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-})
-
-const shortDateFormatter = new Intl.DateTimeFormat("zh-CN", {
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-})
-
-export function formatDateTime(epochSeconds: number): string {
-  return fullDateFormatter.format(new Date(epochSeconds * 1000)).replace(/\//g, "-")
+const fullDateFormatters: Record<Locale, Intl.DateTimeFormat> = {
+  "zh-CN": new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }),
+  en: new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }),
 }
 
-export function formatShortTime(epochSeconds: number): string {
-  return shortDateFormatter.format(new Date(epochSeconds * 1000)).replace(/\//g, "-")
+const shortDateFormatters: Record<Locale, Intl.DateTimeFormat> = {
+  "zh-CN": new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }),
+  en: new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }),
 }
 
-export function formatRelativeTime(epochSeconds: number): string {
+export function formatDateTime(
+  epochSeconds: number,
+  locale: Locale = getCurrentLocale()
+): string {
+  const formatted = fullDateFormatters[locale].format(new Date(epochSeconds * 1000))
+  return locale === "zh-CN" ? formatted.replace(/\//g, "-") : formatted
+}
+
+export function formatShortTime(
+  epochSeconds: number,
+  locale: Locale = getCurrentLocale()
+): string {
+  const formatted = shortDateFormatters[locale].format(new Date(epochSeconds * 1000))
+  return locale === "zh-CN" ? formatted.replace(/\//g, "-") : formatted
+}
+
+export function formatRelativeTime(
+  epochSeconds: number,
+  locale: Locale = getCurrentLocale()
+): string {
   const diffSecs = Math.round(Date.now() / 1000 - epochSeconds)
   if (diffSecs < 0) {
     const ahead = Math.abs(diffSecs)
-    if (ahead < 60) return `${ahead} 秒后`
-    if (ahead < 3600) return `${Math.floor(ahead / 60)} 分钟后`
-    if (ahead < 86400) return `${Math.floor(ahead / 3600)} 小时后`
-    return `${Math.floor(ahead / 86400)} 天后`
+    if (ahead < 60) return translate(locale, "time.inSecs", { n: ahead })
+    if (ahead < 3600)
+      return translate(locale, "time.inMins", { n: Math.floor(ahead / 60) })
+    if (ahead < 86400)
+      return translate(locale, "time.inHours", { n: Math.floor(ahead / 3600) })
+    return translate(locale, "time.inDays", { n: Math.floor(ahead / 86400) })
   }
-  if (diffSecs < 10) return "刚刚"
-  if (diffSecs < 60) return `${diffSecs} 秒前`
-  if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)} 分钟前`
-  if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)} 小时前`
-  return `${Math.floor(diffSecs / 86400)} 天前`
+  if (diffSecs < 10) return translate(locale, "time.justNow")
+  if (diffSecs < 60) return translate(locale, "time.secsAgo", { n: diffSecs })
+  if (diffSecs < 3600)
+    return translate(locale, "time.minsAgo", { n: Math.floor(diffSecs / 60) })
+  if (diffSecs < 86400)
+    return translate(locale, "time.hoursAgo", {
+      n: Math.floor(diffSecs / 3600),
+    })
+  return translate(locale, "time.daysAgo", {
+    n: Math.floor(diffSecs / 86400),
+  })
 }
 
 export function formatLatency(ms: number): string {

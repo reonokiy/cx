@@ -40,17 +40,19 @@ import { ProviderIcon } from "@/components/shared/provider-icon"
 import { useCreateVirtualKeyMutation } from "@/hooks/use-console-queries"
 import { getErrorMessage, type CreateVirtualKeyResponse } from "@/lib/api"
 import { formatDateTime } from "@/lib/format"
+import { useI18n, type MessageKey } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 
-const TTL_PRESETS = [
-  { label: "1 小时", seconds: "3600" },
-  { label: "24 小时", seconds: "86400" },
-  { label: "7 天", seconds: "604800" },
-  { label: "30 天", seconds: "2592000" },
-] as const
+const TTL_PRESETS: { labelKey: MessageKey; seconds: string }[] = [
+  { labelKey: "vkeys.ttl1h", seconds: "3600" },
+  { labelKey: "vkeys.ttl24h", seconds: "86400" },
+  { labelKey: "vkeys.ttl7d", seconds: "604800" },
+  { labelKey: "vkeys.ttl30d", seconds: "2592000" },
+]
 
 export function VirtualKeysTab() {
   const { activeProfile, activeProfileMeta, canIssueKeys } = useActiveProfile()
+  const { locale, t } = useI18n()
   const createKey = useCreateVirtualKeyMutation()
 
   const platforms = activeProfileMeta?.platforms ?? []
@@ -72,11 +74,13 @@ export function VirtualKeysTab() {
             <EmptyMedia variant="icon">
               <KeyRound />
             </EmptyMedia>
-            <EmptyTitle className="text-base">无法签发虚拟密钥</EmptyTitle>
+            <EmptyTitle className="text-base">
+              {t("vkeys.cannotIssueTitle")}
+            </EmptyTitle>
             <EmptyDescription>
               {activeProfile
-                ? `当前账号无权为 ${activeProfile} 签发虚拟密钥。`
-                : "请先选择一个 Profile。"}
+                ? t("vkeys.cannotIssueDesc", { profile: activeProfile })
+                : t("vkeys.selectProfile")}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -92,9 +96,11 @@ export function VirtualKeysTab() {
             <EmptyMedia variant="icon">
               <KeyRound />
             </EmptyMedia>
-            <EmptyTitle className="text-base">尚未挂载平台</EmptyTitle>
+            <EmptyTitle className="text-base">
+              {t("vkeys.noPlatformsTitle")}
+            </EmptyTitle>
             <EmptyDescription>
-              请先在「平台与规则」中为 {activeProfile} 添加至少一个平台。
+              {t("vkeys.noPlatformsDesc", { profile: activeProfile })}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -113,7 +119,12 @@ export function VirtualKeysTab() {
         ttl_secs: Number(ttlSecs),
       })
       setIssued(res)
-      toast.success(`已为 ${activeProfile} / ${res.platform} 生成虚拟密钥`)
+      toast.success(
+        t("vkeys.toastGenerated", {
+          profile: activeProfile,
+          platform: res.platform,
+        })
+      )
     } catch (err) {
       const msg = getErrorMessage(err)
       setError(msg)
@@ -126,11 +137,12 @@ export function VirtualKeysTab() {
       <Card className="max-w-xl shadow-xs">
         <CardHeader>
           <CardTitle className="text-sm font-medium">
-            静态虚拟密钥（占位假密钥）
+            {t("vkeys.title")}
           </CardTitle>
           <CardDescription className="text-xs">
-            日常运行 <code className="font-mono">cx exec</code> 会自动注入临时虚拟密钥；仅当工具或{" "}
-            <code className="font-mono">.env</code> 需写入固定占位字符串时按需签发。
+            {t("vkeys.descBefore")}{" "}
+            <code className="font-mono">cx exec</code> {t("vkeys.descMid")}{" "}
+            <code className="font-mono">.env</code> {t("vkeys.descAfter")}
           </CardDescription>
         </CardHeader>
 
@@ -138,7 +150,7 @@ export function VirtualKeysTab() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="vk-platform" className="text-xs">
-                目标平台
+                {t("vkeys.targetPlatform")}
               </Label>
               <Select
                 value={platformId}
@@ -173,7 +185,7 @@ export function VirtualKeysTab() {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">有效期</Label>
+              <Label className="text-xs">{t("vkeys.ttl")}</Label>
               <div>
                 <ToggleGroup
                   type="single"
@@ -188,7 +200,7 @@ export function VirtualKeysTab() {
                       value={preset.seconds}
                       className="px-3 text-xs"
                     >
-                      {preset.label}
+                      {t(preset.labelKey)}
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
@@ -204,7 +216,9 @@ export function VirtualKeysTab() {
 
             <Button type="submit" size="sm" disabled={createKey.isPending}>
               <KeyRound />
-              {createKey.isPending ? "生成中…" : "生成虚拟密钥"}
+              {createKey.isPending
+                ? t("vkeys.generating")
+                : t("vkeys.generate")}
             </Button>
           </form>
         </CardContent>
@@ -221,10 +235,12 @@ export function VirtualKeysTab() {
             <DialogHeader>
               <div className="mb-1 flex items-center gap-2">
                 <ShieldCheck className="size-4 text-success" />
-                <DialogTitle>虚拟密钥已生成</DialogTitle>
+                <DialogTitle>{t("vkeys.dialogTitle")}</DialogTitle>
               </div>
               <DialogDescription>
-                明文仅显示一次；脱离你的 <code className="font-mono">cx exec</code> 隧道无法调用真实上游。
+                {t("vkeys.dialogDescBefore")}{" "}
+                <code className="font-mono">cx exec</code>{" "}
+                {t("vkeys.dialogDescAfter")}
               </DialogDescription>
             </DialogHeader>
 
@@ -238,24 +254,27 @@ export function VirtualKeysTab() {
                 />
                 <CopyButton
                   value={issued.virtual_key}
-                  label="复制"
                   variant="default"
                   size="sm"
                   showLabel
                 />
               </div>
               <p className="text-xs text-muted-foreground tabular-nums">
-                Profile：<code className="font-mono">{issued.profile}</code> · 平台：
-                <code className="font-mono">{issued.platform}</code>
+                {t("vkeys.dialogMeta", {
+                  profile: issued.profile,
+                  platform: issued.platform,
+                })}
                 {issued.expires_at
-                  ? ` · 到期：${formatDateTime(issued.expires_at)}`
+                  ? t("vkeys.dialogExpires", {
+                      time: formatDateTime(issued.expires_at, locale),
+                    })
                   : ""}
               </p>
             </div>
 
             <DialogFooter>
               <Button size="sm" onClick={() => setIssued(null)}>
-                完成
+                {t("common.done")}
               </Button>
             </DialogFooter>
           </DialogContent>

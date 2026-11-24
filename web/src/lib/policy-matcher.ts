@@ -1,4 +1,5 @@
 import type { PolicyRule } from "@/lib/api"
+import { getCurrentLocale, translate, type Locale } from "@/lib/i18n"
 
 /**
  * Mirrors `cx_protocol::host_matches_pattern`:
@@ -110,7 +111,8 @@ export function simulatePlatformPolicy(
   presetName: string | null,
   presetRules: PolicyRule[],
   customRules: PolicyRule[],
-  input: PolicySimulationInput
+  input: PolicySimulationInput,
+  locale: Locale = getCurrentLocale()
 ): PolicySimulationResult {
   const methodUp = input.method.trim().toUpperCase() || "GET"
   const hostLc = input.host.trim().replace(/\.+$/, "").toLowerCase()
@@ -127,7 +129,10 @@ export function simulatePlatformPolicy(
         source: "preset",
         matchedIndex: idx,
         matchedRule: rule,
-        reason: `命中预设 ${presetName ?? ""} 的拒绝规则 #${idx + 1}。`,
+        reason: translate(locale, "sim.reasonPresetDeny", {
+          preset: presetName ?? "",
+          index: idx + 1,
+        }),
       }
     }
     if (!allowHit) allowHit = { source: "preset", idx, rule }
@@ -142,7 +147,9 @@ export function simulatePlatformPolicy(
         source: "custom",
         matchedIndex: idx,
         matchedRule: rule,
-        reason: `命中自定义拒绝规则 #${idx + 1}（显式拒绝优先于所有允许规则和预设）。`,
+        reason: translate(locale, "sim.reasonCustomDeny", {
+          index: idx + 1,
+        }),
       }
     }
     if (!allowHit) allowHit = { source: "custom", idx, rule }
@@ -156,8 +163,13 @@ export function simulatePlatformPolicy(
       matchedRule: allowHit.rule,
       reason:
         allowHit.source === "preset"
-          ? `命中预设 ${presetName ?? ""} 的允许规则 #${allowHit.idx + 1}，且未被任何拒绝规则拦截。`
-          : `命中自定义允许规则 #${allowHit.idx + 1}，且未被任何拒绝规则拦截。`,
+          ? translate(locale, "sim.reasonPresetAllow", {
+              preset: presetName ?? "",
+              index: allowHit.idx + 1,
+            })
+          : translate(locale, "sim.reasonCustomAllow", {
+              index: allowHit.idx + 1,
+            }),
     }
   }
 
@@ -166,20 +178,30 @@ export function simulatePlatformPolicy(
     source: "default_deny",
     matchedIndex: null,
     matchedRule: null,
-    reason: "未命中任何允许规则，按默认拒绝策略拦截。",
+    reason: translate(locale, "sim.reasonDefaultDeny"),
   }
 }
 
-export function describePolicyRule(rule: PolicyRule): string {
-  const action = rule.effect === "allow" ? "允许" : "拒绝"
+export function describePolicyRule(
+  rule: PolicyRule,
+  locale: Locale = getCurrentLocale()
+): string {
+  const sep = locale === "zh-CN" ? "、" : ", "
+  const action =
+    rule.effect === "allow"
+      ? translate(locale, "common.allow")
+      : translate(locale, "common.deny")
   const methods =
     rule.methods.length === 0 || rule.methods.includes("*")
-      ? "任意方法"
+      ? translate(locale, "rule.descAnyMethod")
       : rule.methods.join(" / ")
   const hosts =
     rule.hosts.length === 0 || rule.hosts.includes("*")
-      ? "当前平台所有主机"
-      : rule.hosts.join("、")
-  const paths = rule.paths.length === 0 ? "任意路径" : rule.paths.join("、")
+      ? translate(locale, "rule.descAllHosts")
+      : rule.hosts.join(sep)
+  const paths =
+    rule.paths.length === 0
+      ? translate(locale, "rule.descAnyPath")
+      : rule.paths.join(sep)
   return `${action} ${methods} ${hosts} ${paths}`
 }

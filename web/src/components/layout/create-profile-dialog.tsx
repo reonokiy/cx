@@ -28,6 +28,7 @@ import {
   type PlatformSpec,
   type ProviderCatalogEntry,
 } from "@/lib/api"
+import { useI18n } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 
 const IDENTIFIER_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/
@@ -74,6 +75,7 @@ export function CreateProfileDialog({
 }) {
   const { providers, setActiveProfile } = useActiveProfile()
   const createProfile = useCreateProfileMutation()
+  const { t } = useI18n()
 
   const namedProviders = providers.filter((p) => !p.allow_multiple)
 
@@ -106,7 +108,7 @@ export function CreateProfileDialog({
     e.preventDefault()
     const cleanName = name.trim().toLowerCase()
     if (!IDENTIFIER_RE.test(cleanName)) {
-      setError("名称需由小写字母或数字开头，仅可包含 a-z、0-9、.、_、-。")
+      setError(t("profile.create.errName"))
       return
     }
     const groups = groupsRaw
@@ -114,7 +116,7 @@ export function CreateProfileDialog({
       .map((s) => s.trim())
       .filter(Boolean)
     if (groups.length === 0) {
-      setError("请至少填写一个允许访问的 OIDC 用户组（如 eng 或 *）。")
+      setError(t("profile.create.errGroups"))
       return
     }
 
@@ -135,7 +137,7 @@ export function CreateProfileDialog({
         platforms,
       })
       setActiveProfile(created.name)
-      toast.success(`已创建 Profile ${created.name}`)
+      toast.success(t("profile.create.created", { name: created.name }))
       onOpenChange(false)
       onCreated?.(created.name)
     } catch (err) {
@@ -147,18 +149,20 @@ export function CreateProfileDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>新建 Profile</DialogTitle>
+          <DialogTitle>{t("profile.create.title")}</DialogTitle>
           <DialogDescription>
-            Profile 对应一个使用场景，可按需挂载多个上游平台与独立规则。
+            {t("profile.create.description")}
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="create-profile-name">名称</Label>
+            <Label htmlFor="create-profile-name">
+              {t("profile.create.name")}
+            </Label>
             <Input
               id="create-profile-name"
-              placeholder="例如 coding-agent 或 dev"
+              placeholder={t("profile.create.namePlaceholder")}
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="font-mono text-sm"
@@ -168,11 +172,14 @@ export function CreateProfileDialog({
 
           <div className="space-y-1.5">
             <Label htmlFor="create-profile-desc">
-              说明 <span className="font-normal text-muted-foreground">（可选）</span>
+              {t("profile.create.desc")}
+              <span className="font-normal text-muted-foreground">
+                {t("common.optional")}
+              </span>
             </Label>
             <Input
               id="create-profile-desc"
-              placeholder="例如 日常研发与 AI 代理环境"
+              placeholder={t("profile.create.descPlaceholder")}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
@@ -180,7 +187,9 @@ export function CreateProfileDialog({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label htmlFor="create-profile-groups">允许的用户组</Label>
+              <Label htmlFor="create-profile-groups">
+                {t("profile.create.groups")}
+              </Label>
               <Input
                 id="create-profile-groups"
                 placeholder="eng, cx-admins"
@@ -191,7 +200,9 @@ export function CreateProfileDialog({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="create-profile-fallback">未匹配域名兜底</Label>
+              <Label htmlFor="create-profile-fallback">
+                {t("profile.create.fallback")}
+              </Label>
               <Select
                 value={fallback}
                 onValueChange={(v) => setFallback(v as DefaultRouteAction)}
@@ -200,8 +211,12 @@ export function CreateProfileDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="client_passthrough">客户端直连</SelectItem>
-                  <SelectItem value="deny">严格拒绝（白名单）</SelectItem>
+                  <SelectItem value="client_passthrough">
+                    {t("profile.create.fallbackPassthrough")}
+                  </SelectItem>
+                  <SelectItem value="deny">
+                    {t("profile.create.fallbackDeny")}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -210,9 +225,9 @@ export function CreateProfileDialog({
           {namedProviders.length > 0 && (
             <div className="space-y-2">
               <Label>
-                初始挂载平台{" "}
+                {t("profile.create.initialPlatforms")}
                 <span className="font-normal text-muted-foreground">
-                  （创建后仍可随时增删或添加自定义 HTTP）
+                  {t("profile.create.initialPlatformsHint")}
                 </span>
               </Label>
               <div className="grid gap-2 sm:grid-cols-2">
@@ -261,11 +276,13 @@ export function CreateProfileDialog({
               onClick={() => onOpenChange(false)}
               disabled={createProfile.isPending}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button type="submit" disabled={createProfile.isPending}>
               <Plus />
-              {createProfile.isPending ? "创建中…" : "创建 Profile"}
+              {createProfile.isPending
+                ? t("profile.create.submitting")
+                : t("profile.create.submit")}
             </Button>
           </DialogFooter>
         </form>

@@ -310,6 +310,8 @@ pub struct UserSummary {
     pub id: String,
     pub email: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     pub groups: Vec<String>,
 }
 

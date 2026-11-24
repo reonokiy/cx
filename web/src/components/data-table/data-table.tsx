@@ -32,6 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { useI18n } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 
 interface DataTableProps<TData, TValue> {
@@ -57,8 +58,8 @@ export function DataTable<TData, TValue>({
   data,
   loading = false,
   skeletonRows = 6,
-  emptyTitle = "暂无数据",
-  emptyDescription = "当前筛选条件下没有匹配的记录。",
+  emptyTitle,
+  emptyDescription,
   emptyAction,
   toolbar,
   footer,
@@ -69,6 +70,7 @@ export function DataTable<TData, TValue>({
   selectedRowId,
   className,
 }: DataTableProps<TData, TValue>) {
+  const { t } = useI18n()
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
     initialColumnVisibility ?? {}
   )
@@ -97,11 +99,11 @@ export function DataTable<TData, TValue>({
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm" className="h-8 gap-1.5">
                   <Columns3 className="size-3.5" />
-                  <span>列显示</span>
+                  <span>{t("common.columns")}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-40">
-                <DropdownMenuLabel>切换可见列</DropdownMenuLabel>
+                <DropdownMenuLabel>{t("common.toggleColumns")}</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {hideableColumns.map((column) => (
                   <DropdownMenuCheckboxItem
@@ -122,7 +124,7 @@ export function DataTable<TData, TValue>({
 
       {loading ? (
         <div role="status" className="space-y-2.5 px-4 py-5 sm:px-5">
-          <span className="sr-only">正在加载…</span>
+          <span className="sr-only">{t("common.loading")}</span>
           {Array.from({ length: skeletonRows }).map((_, idx) => (
             <Skeleton key={idx} className="h-10 w-full rounded-md" />
           ))}
@@ -133,8 +135,12 @@ export function DataTable<TData, TValue>({
             <EmptyMedia variant="icon">
               <Inbox />
             </EmptyMedia>
-            <EmptyTitle className="text-base">{emptyTitle}</EmptyTitle>
-            <EmptyDescription>{emptyDescription}</EmptyDescription>
+            <EmptyTitle className="text-base">
+              {emptyTitle ?? t("common.noData")}
+            </EmptyTitle>
+            <EmptyDescription>
+              {emptyDescription ?? t("common.noMatch")}
+            </EmptyDescription>
           </EmptyHeader>
           {emptyAction}
         </Empty>

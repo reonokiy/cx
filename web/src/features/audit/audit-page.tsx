@@ -37,8 +37,8 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { DataTable } from "@/components/data-table/data-table"
 import { PageHeader } from "@/components/shared/page-header"
 import {
-  AUDIT_COLUMN_LABELS,
   createAuditColumns,
+  getAuditColumnLabels,
 } from "@/features/audit/audit-columns"
 import { AuditDetailSheet } from "@/features/audit/audit-detail-sheet"
 import { useAuditPageQuery } from "@/hooks/use-console-queries"
@@ -52,6 +52,7 @@ import {
   exportAuditAsJson,
   formatLatency,
 } from "@/lib/format"
+import { useI18n } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 
 interface AuditPageProps {
@@ -61,6 +62,7 @@ interface AuditPageProps {
 
 export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
   const { activeProfile, activeProfileMeta } = useActiveProfile()
+  const { locale, t } = useI18n()
   const [searchInput, setSearchInput] = useState(initialSearch ?? "")
   const [search, setSearch] = useState(initialSearch ?? "")
   const [platform, setPlatform] = useState(initialPlatform ?? "all")
@@ -110,9 +112,10 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
 
   const events = auditQuery.data?.events ?? []
   const columns = useMemo(
-    () => createAuditColumns((entry) => setSelected(entry)),
-    []
+    () => createAuditColumns(locale, (entry) => setSelected(entry)),
+    [locale]
   )
+  const columnLabels = useMemo(() => getAuditColumnLabels(locale), [locale])
 
   const pageStats = useMemo(() => {
     const deny = events.filter((e) => e.decision === "deny").length
@@ -145,7 +148,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
-        title="审计日志"
+        title={t("nav.audit")}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-2 px-1">
@@ -159,7 +162,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                 htmlFor="audit-auto-refresh"
                 className="cursor-pointer text-xs font-normal text-muted-foreground"
               >
-                自动刷新
+                {t("audit.autoRefresh")}
               </Label>
             </div>
 
@@ -171,15 +174,15 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                   disabled={events.length === 0}
                 >
                   <Download />
-                  导出
+                  {t("common.export")}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={() => exportAuditAsCsv(events)}>
-                  导出 CSV
+                  {t("audit.exportCsv")}
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => exportAuditAsJson(events)}>
-                  导出 JSON
+                  {t("audit.exportJson")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -196,7 +199,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
               <RefreshCw
                 className={auditQuery.isFetching ? "animate-spin" : undefined}
               />
-              刷新
+              {t("common.refresh")}
             </Button>
           </div>
         }
@@ -219,21 +222,19 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
           data={events}
           loading={auditQuery.isLoading}
           enableColumnVisibility
-          columnLabels={AUDIT_COLUMN_LABELS}
+          columnLabels={columnLabels}
           initialColumnVisibility={{ client_ip: false }}
           onRowClick={(entry) => setSelected(entry)}
           selectedRowId={(entry) => selected?.id === entry.id}
-          emptyTitle="暂无匹配的审计记录"
+          emptyTitle={t("audit.emptyTitle")}
           emptyDescription={
-            hasActiveFilters
-              ? "调整筛选条件后重试。"
-              : "当前 Profile 产生代理流量后将在此显示。"
+            hasActiveFilters ? t("audit.emptyFiltered") : t("audit.emptyIdle")
           }
           emptyAction={
             hasActiveFilters ? (
               <Button variant="outline" size="sm" onClick={resetFilters}>
                 <RotateCcw />
-                重置筛选
+                {t("common.resetFilters")}
               </Button>
             ) : undefined
           }
@@ -248,8 +249,8 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                     <Search className="size-3.5" aria-hidden="true" />
                   </InputGroupAddon>
                   <InputGroupInput
-                    placeholder="搜索主机、路径、用户或会话…"
-                    aria-label="搜索审计日志"
+                    placeholder={t("audit.searchPlaceholder")}
+                    aria-label={t("audit.searchAria")}
                     value={searchInput}
                     maxLength={120}
                     onChange={(e) => {
@@ -266,7 +267,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                       <InputGroupButton
                         type="button"
                         size="icon-xs"
-                        aria-label="清空搜索"
+                        aria-label={t("common.clearSearch")}
                         onClick={() => {
                           setSearchInput("")
                           setSearch("")
@@ -279,7 +280,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                   )}
                   <InputGroupAddon align="inline-end">
                     <InputGroupButton type="submit" size="xs">
-                      搜索
+                      {t("common.search")}
                     </InputGroupButton>
                   </InputGroupAddon>
                 </InputGroup>
@@ -296,12 +297,14 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                   <SelectTrigger
                     size="sm"
                     className="w-36 font-mono text-xs"
-                    aria-label="按平台筛选"
+                    aria-label={t("audit.filterPlatformAria")}
                   >
-                    <SelectValue placeholder="全部平台" />
+                    <SelectValue placeholder={t("audit.allPlatforms")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部平台</SelectItem>
+                    <SelectItem value="all">
+                      {t("audit.allPlatforms")}
+                    </SelectItem>
                     {platforms.map((p) => (
                       <SelectItem key={p.id} value={p.id} className="text-xs">
                         {p.id === p.provider_id ? p.provider_name : p.id}
@@ -321,16 +324,16 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                   setDecision(value)
                   setCursors([])
                 }}
-                aria-label="按判定结果筛选"
+                aria-label={t("audit.filterDecisionAria")}
               >
                 <ToggleGroupItem value="all" className="text-xs">
-                  全部
+                  {t("common.all")}
                 </ToggleGroupItem>
                 <ToggleGroupItem value="allow" className="text-xs">
-                  允许
+                  {t("common.allow")}
                 </ToggleGroupItem>
                 <ToggleGroupItem value="deny" className="text-xs">
-                  拒绝
+                  {t("common.deny")}
                 </ToggleGroupItem>
               </ToggleGroup>
 
@@ -343,7 +346,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                   className="h-8 px-2 text-xs text-muted-foreground"
                 >
                   <X className="size-3.5" />
-                  重置
+                  {t("common.reset")}
                 </Button>
               )}
             </>
@@ -352,15 +355,22 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
             <>
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 tabular-nums">
                 <span>
-                  第 {cursors.length + 1} 页 · {pageStats.total} 条
+                  {t("audit.pageSummary", {
+                    page: cursors.length + 1,
+                    count: pageStats.total,
+                  })}
                 </span>
                 {pageStats.deny > 0 && (
                   <span className="text-destructive">
-                    {pageStats.deny} 条拒绝
+                    {t("audit.denySummary", { count: pageStats.deny })}
                   </span>
                 )}
                 {pageStats.avgLatency !== null && (
-                  <span>均耗 {formatLatency(pageStats.avgLatency)}</span>
+                  <span>
+                    {t("audit.avgLatencySummary", {
+                      value: formatLatency(pageStats.avgLatency),
+                    })}
+                  </span>
                 )}
                 {cursors.length > 0 && (
                   <Button
@@ -370,7 +380,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                     className="h-auto p-0 text-xs"
                     onClick={() => setCursors([])}
                   >
-                    回到最新
+                    {t("audit.backToLatest")}
                   </Button>
                 )}
               </div>
@@ -384,7 +394,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                   onClick={() => setCursors((prev) => prev.slice(0, -1))}
                 >
                   <ChevronLeft />
-                  上一页
+                  {t("audit.prevPage")}
                 </Button>
                 <Button
                   type="button"
@@ -396,7 +406,7 @@ export function AuditPage({ initialSearch, initialPlatform }: AuditPageProps) {
                     if (nextCursor) setCursors((prev) => [...prev, nextCursor])
                   }}
                 >
-                  下一页
+                  {t("audit.nextPage")}
                   <ChevronRight />
                 </Button>
               </div>

@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import type { PolicyRule } from "@/lib/api"
+import { useI18n } from "@/lib/i18n"
 import { simulatePlatformPolicy } from "@/lib/policy-matcher"
 import { cn } from "@/lib/utils"
 
@@ -26,6 +27,7 @@ export function PlatformSimulator({
   customRules: PolicyRule[]
   defaultHost: string
 }) {
+  const { locale, t } = useI18n()
   const [method, setMethod] = useState("GET")
   const [host, setHost] = useState(defaultHost)
   const [path, setPath] = useState("/")
@@ -36,24 +38,32 @@ export function PlatformSimulator({
 
   const result = useMemo(
     () =>
-      simulatePlatformPolicy(presetName, presetRules, customRules, {
-        method,
-        host,
-        path,
-      }),
-    [presetName, presetRules, customRules, method, host, path]
+      simulatePlatformPolicy(
+        presetName,
+        presetRules,
+        customRules,
+        {
+          method,
+          host,
+          path,
+        },
+        locale
+      ),
+    [presetName, presetRules, customRules, method, host, path, locale]
   )
 
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
       <div className="flex items-center gap-1.5 text-xs font-medium">
         <Play className="size-3.5 text-muted-foreground" />
-        <span>策略模拟（预设 + 自定义规则联合评估）</span>
+        <span>{t("sim.title")}</span>
       </div>
 
       <div className="grid gap-2.5 sm:grid-cols-[110px_minmax(0,1fr)_minmax(0,1.2fr)]">
         <div className="space-y-1">
-          <Label className="text-[11px] text-muted-foreground">方法</Label>
+          <Label className="text-[11px] text-muted-foreground">
+            {t("sim.method")}
+          </Label>
           <Select value={method} onValueChange={setMethod}>
             <SelectTrigger size="sm" className="font-mono text-xs">
               <SelectValue />
@@ -69,7 +79,9 @@ export function PlatformSimulator({
         </div>
 
         <div className="space-y-1">
-          <Label className="text-[11px] text-muted-foreground">目标主机</Label>
+          <Label className="text-[11px] text-muted-foreground">
+            {t("sim.host")}
+          </Label>
           <Input
             value={host}
             onChange={(e) => setHost(e.target.value)}
@@ -79,7 +91,9 @@ export function PlatformSimulator({
         </div>
 
         <div className="space-y-1">
-          <Label className="text-[11px] text-muted-foreground">请求路径</Label>
+          <Label className="text-[11px] text-muted-foreground">
+            {t("sim.path")}
+          </Label>
           <Input
             value={path}
             onChange={(e) => setPath(e.target.value)}
@@ -104,7 +118,7 @@ export function PlatformSimulator({
         )}
         <div className="space-y-0.5">
           <span className="font-medium">
-            {result.decision === "allow" ? "放行 (Allow)" : "拒绝 (Deny)"}
+            {result.decision === "allow" ? t("sim.allow") : t("sim.deny")}
           </span>
           <span className="ml-2 text-muted-foreground">{result.reason}</span>
         </div>

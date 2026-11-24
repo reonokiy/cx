@@ -86,11 +86,23 @@ import {
 } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { formatDateTime } from "@/lib/format"
+import { useI18n, type Locale } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 import { cn } from "@/lib/utils"
 
 const IDENTIFIER_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const NEW_GENERIC_KEY = "__new_generic__"
+
+function displayProviderName(
+  providerId: string,
+  providerName: string,
+  locale: Locale
+): string {
+  if (providerId === "generic-http" && locale === "en") {
+    return "Custom HTTP"
+  }
+  return providerName
+}
 
 function suggestEnvVar(id: string): string {
   const clean = id
@@ -111,15 +123,20 @@ type Selection =
   | { kind: "new_generic" }
 
 function PresetRulesTable({ rules }: { rules: PolicyRule[] }) {
+  const { t } = useI18n()
   return (
     <div className="mt-3 overflow-x-auto rounded-md border bg-background">
       <Table>
         <TableHeader>
           <TableRow className="bg-muted/30 hover:bg-muted/30">
-            <TableHead className="w-[84px] text-xs">动作</TableHead>
-            <TableHead className="w-[120px] text-xs">方法</TableHead>
-            <TableHead className="text-xs">主机</TableHead>
-            <TableHead className="text-xs">路径</TableHead>
+            <TableHead className="w-[84px] text-xs">
+              {t("platforms.colAction")}
+            </TableHead>
+            <TableHead className="w-[120px] text-xs">
+              {t("platforms.colMethod")}
+            </TableHead>
+            <TableHead className="text-xs">{t("platforms.colHost")}</TableHead>
+            <TableHead className="text-xs">{t("platforms.colPath")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -160,6 +177,7 @@ function SecretValueForm({
   updatedAt: number | null
   encryptionReady: boolean
 }) {
+  const { locale, t } = useI18n()
   const upsertSecret = useUpsertSecretMutation()
   const [value, setValue] = useState("")
   const [revealed, setRevealed] = useState(false)
@@ -167,7 +185,7 @@ function SecretValueForm({
   async function handleSave(e: FormEvent) {
     e.preventDefault()
     if (!value.trim()) {
-      toast.error(`请输入 ${field}`)
+      toast.error(t("platforms.errEmptySecret", { field }))
       return
     }
     try {
@@ -178,7 +196,7 @@ function SecretValueForm({
       })
       setValue("")
       setRevealed(false)
-      toast.success(`已加密保存凭据 ${secretName}`)
+      toast.success(t("platforms.toastSecretSaved", { name: secretName }))
     } catch (err) {
       toast.error(getErrorMessage(err))
     }
@@ -200,10 +218,12 @@ function SecretValueForm({
           )}
         >
           {configured && updatedAt
-            ? `已配置 · ${formatDateTime(updatedAt)}`
+            ? t("platforms.secretConfiguredAt", {
+                time: formatDateTime(updatedAt, locale),
+              })
             : configured
-              ? "已配置"
-              : "尚未录入密钥"}
+              ? t("platforms.secretConfiguredShort")
+              : t("platforms.secretNotEntered")}
         </span>
       </div>
 
@@ -216,8 +236,8 @@ function SecretValueForm({
             onChange={(e) => setValue(e.target.value)}
             placeholder={
               configured
-                ? `输入新的 ${field} 以覆盖（服务端不回显明文）`
-                : `输入 ${field}`
+                ? t("platforms.secretPlaceholderOverwrite", { field })
+                : t("platforms.secretPlaceholderNew", { field })
             }
             disabled={!encryptionReady || upsertSecret.isPending}
             autoComplete="off"
@@ -227,7 +247,7 @@ function SecretValueForm({
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label={revealed ? "隐藏" : "显示"}
+            aria-label={revealed ? t("common.hide") : t("common.show")}
             onClick={() => setRevealed((r) => !r)}
             className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground"
           >
@@ -245,17 +265,15 @@ function SecretValueForm({
           disabled={!encryptionReady || upsertSecret.isPending || !value.trim()}
         >
           <Save className="size-3.5" />
-          {upsertSecret.isPending ? "保存中…" : "保存密钥"}
+          {upsertSecret.isPending
+            ? t("common.saving")
+            : t("platforms.saveSecret")}
         </Button>
       </div>
     </form>
   )
 }
 
-/**
- * Inline panel to enable an unmounted named Provider or create a new `generic-http` instance
- * directly inside the unified Platforms workspace (no modal detour).
- */
 function EnableProviderPanel({
   profileName,
   provider,
@@ -273,7 +291,9 @@ function EnableProviderPanel({
   submitting: boolean
   onEnable: (platform: PlatformSpec) => Promise<void>
 }) {
+  const { locale, t } = useI18n()
   const isCustomHttp = provider.allow_multiple
+  const localizedName = displayProviderName(provider.id, provider.name, locale)
   const presetNames = Object.keys(provider.presets)
   const defaultPreset = provider.presets.readonly
     ? "readonly"
@@ -328,11 +348,11 @@ function EnableProviderPanel({
     e.preventDefault()
     const id = isCustomHttp ? customId.trim().toLowerCase() : provider.id
     if (!IDENTIFIER_RE.test(id)) {
-      setError("平台标识需由小写字母或数字开头，仅支持 a-z、0-9、.、_、-。")
+      setError(t("platforms.errId"))
       return
     }
     if (existingPlatformIds.includes(id)) {
-      setError(`当前 Profile 中已存在名为 ${id} 的平台。`)
+      setError(t("platforms.errDuplicate", { id }))
       return
     }
 
@@ -340,7 +360,7 @@ function EnableProviderPanel({
     for (const paramDef of provider.params) {
       const val = (params[paramDef.name] ?? "").trim()
       if (paramDef.required && !val) {
-        setError(`请填写必填参数 ${paramDef.name}。`)
+        setError(t("platforms.errRequiredParam", { name: paramDef.name }))
         return
       }
       if (val && (paramDef.required || val !== (paramDef.default ?? ""))) {
@@ -386,20 +406,22 @@ function EnableProviderPanel({
           <ProviderIcon
             icon={provider.icon}
             providerId={provider.id}
-            name={provider.name}
+            name={localizedName}
             size="lg"
           />
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <CardTitle className="text-base font-semibold">
-                {isCustomHttp ? `新增 ${provider.name}` : provider.name}
+                {isCustomHttp
+                  ? t("platforms.addCustomHttpTitle", { name: localizedName })
+                  : localizedName}
               </CardTitle>
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                 {provider.id}
               </code>
               {!isCustomHttp && (
                 <span className="rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                  未启用
+                  {t("common.disabled")}
                 </span>
               )}
             </div>
@@ -413,7 +435,9 @@ function EnableProviderPanel({
       <CardContent className="space-y-5 pt-5">
         {provider.default_inject_hosts.length > 0 && !isCustomHttp && (
           <div className="space-y-1.5 text-xs">
-            <span className="text-muted-foreground">默认注入域名</span>
+            <span className="text-muted-foreground">
+              {t("platforms.defaultHosts")}
+            </span>
             <div className="flex flex-wrap gap-1.5">
               {provider.default_inject_hosts.map((host) => (
                 <code
@@ -429,18 +453,18 @@ function EnableProviderPanel({
 
         {!isAdmin ? (
           <div className="rounded-lg border border-dashed p-5 text-xs text-muted-foreground">
-            当前 Profile 尚未启用 {provider.name}，如需开通请联系管理员配置。
+            {t("platforms.notEnabledMember", { name: localizedName })}
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             {isCustomHttp && (
               <div className="space-y-1.5">
                 <Label htmlFor="inline-custom-id" className="text-xs">
-                  自定义平台标识
+                  {t("platforms.customIdLabel")}
                 </Label>
                 <Input
                   id="inline-custom-id"
-                  placeholder="例如 jira 或 internal-api"
+                  placeholder={t("platforms.customIdPlaceholder")}
                   value={customId}
                   onChange={(e) => handleCustomIdChange(e.target.value)}
                   className="max-w-sm font-mono text-xs"
@@ -465,7 +489,7 @@ function EnableProviderPanel({
                     <Input
                       id={`enable-param-${p.name}`}
                       value={params[p.name] ?? ""}
-                      placeholder={p.default ?? "必填"}
+                      placeholder={p.default ?? t("common.required")}
                       onChange={(e) =>
                         setParams((prev) => ({
                           ...prev,
@@ -486,7 +510,7 @@ function EnableProviderPanel({
                     htmlFor="enable-platform-preset"
                     className="text-xs font-medium"
                   >
-                    策略预设
+                    {t("platforms.preset")}
                   </Label>
                   <Select value={preset} onValueChange={setPreset}>
                     <SelectTrigger
@@ -506,7 +530,9 @@ function EnableProviderPanel({
                           {name}
                         </SelectItem>
                       ))}
-                      <SelectItem value="none">不使用预设（默认拒绝）</SelectItem>
+                      <SelectItem value="none">
+                        {t("platforms.presetNone")}
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -524,7 +550,7 @@ function EnableProviderPanel({
                     ) : (
                       <ChevronRight className="size-3.5" />
                     )}
-                    预设内置规则 ({presetRules.length} 条)
+                    {t("platforms.presetRules", { count: presetRules.length })}
                   </Button>
                 )}
               </div>
@@ -537,7 +563,7 @@ function EnableProviderPanel({
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="enable-secret-scope" className="text-xs">
-                    上游凭据模式
+                    {t("platforms.secretMode")}
                   </Label>
                   <Select
                     value={secretScope}
@@ -548,10 +574,10 @@ function EnableProviderPanel({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="shared">
-                        团队共享（管理员录入）
+                        {t("platforms.secretShared")}
                       </SelectItem>
                       <SelectItem value="personal">
-                        成员个人（默认跨 Profile 复用）
+                        {t("platforms.secretPersonal")}
                       </SelectItem>
                     </SelectContent>
                   </Select>
@@ -559,7 +585,7 @@ function EnableProviderPanel({
 
                 <div className="space-y-1.5">
                   <Label htmlFor="enable-secret-name" className="text-xs">
-                    凭据名称
+                    {t("platforms.secretName")}
                   </Label>
                   <Input
                     id="enable-secret-name"
@@ -575,7 +601,7 @@ function EnableProviderPanel({
                   {secretScope === "shared" && sharedSecrets.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1 pt-0.5">
                       <span className="text-[11px] text-muted-foreground">
-                        复用：
+                        {t("platforms.reuse")}
                       </span>
                       {sharedSecrets.slice(0, 5).map((s) => (
                         <button
@@ -603,10 +629,10 @@ function EnableProviderPanel({
               <Button type="submit" size="sm" disabled={submitting}>
                 <Plus />
                 {submitting
-                  ? "保存中…"
+                  ? t("common.saving")
                   : isCustomHttp
-                    ? `添加自定义 HTTP 到 ${profileName}`
-                    : `启用 ${provider.name}`}
+                    ? t("platforms.addCustomTo", { profile: profileName })
+                    : t("platforms.enableNamed", { name: localizedName })}
               </Button>
             </div>
           </form>
@@ -637,6 +663,7 @@ function MountedPlatformWorkspace({
   onSavePlatformSpec: (nextSpec: PlatformSpec) => Promise<void>
   onRemovePlatform: () => void
 }) {
+  const { locale, t } = useI18n()
   const [tab, setTab] = useState<"rules" | "secrets" | "params">("rules")
   const [draft, setDraft] = useState<PlatformSpec>(platform.spec)
   const [showPresetRules, setShowPresetRules] = useState(false)
@@ -671,11 +698,16 @@ function MountedPlatformWorkspace({
     return providerMeta?.presets[draft.preset] ?? []
   }, [draft.preset, platform.spec.preset, platform.preset_rules, providerMeta])
 
+  const localizedProviderName = displayProviderName(
+    platform.spec.provider_id,
+    platform.provider_name,
+    locale
+  )
   const isNamed = platform.spec.id === platform.spec.provider_id
-  const primaryTitle = isNamed ? platform.provider_name : platform.spec.id
+  const primaryTitle = isNamed ? localizedProviderName : platform.spec.id
   const secondaryCode = isNamed
     ? platform.spec.id
-    : `${platform.provider_name} · ${platform.spec.provider_id}`
+    : `${localizedProviderName} · ${platform.spec.provider_id}`
 
   function buildSpecForSave(): PlatformSpec {
     const narrowed = narrowHostsInput
@@ -755,7 +787,7 @@ function MountedPlatformWorkspace({
           <ProviderIcon
             icon={platform.provider_icon}
             providerId={platform.spec.provider_id}
-            name={platform.provider_name}
+            name={localizedProviderName}
             size="lg"
           />
           <div className="min-w-0 space-y-1">
@@ -795,7 +827,7 @@ function MountedPlatformWorkspace({
                 }}
                 disabled={savingProfile}
               >
-                放弃
+                {t("common.discard")}
               </Button>
               <Button
                 type="button"
@@ -804,7 +836,7 @@ function MountedPlatformWorkspace({
                 disabled={savingProfile}
               >
                 <Save />
-                {savingProfile ? "保存中…" : "保存变更"}
+                {savingProfile ? t("common.saving") : t("common.saveChanges")}
               </Button>
             </>
           )}
@@ -813,7 +845,7 @@ function MountedPlatformWorkspace({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={`停用或移除 ${primaryTitle}`}
+              aria-label={t("platforms.removeAria", { name: primaryTitle })}
               className="text-muted-foreground hover:text-destructive"
               onClick={onRemovePlatform}
               disabled={savingProfile}
@@ -831,15 +863,15 @@ function MountedPlatformWorkspace({
         >
           <TabsList>
             <TabsTrigger value="rules">
-              访问规则 ({draft.rules.length})
+              {t("platforms.tabRules", { count: draft.rules.length })}
             </TabsTrigger>
             <TabsTrigger value="secrets">
-              上游凭据
+              {t("platforms.tabSecrets")}
               {platform.secrets.some((s) => !s.configured) && (
                 <span className="ml-1.5 size-1.5 rounded-full bg-warning" />
               )}
             </TabsTrigger>
-            <TabsTrigger value="params">参数与路由</TabsTrigger>
+            <TabsTrigger value="params">{t("platforms.tabParams")}</TabsTrigger>
           </TabsList>
 
           {/* TAB 1: ACCESS RULES */}
@@ -847,8 +879,11 @@ function MountedPlatformWorkspace({
             <div className="rounded-lg border bg-muted/20 p-3.5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <Label htmlFor="platform-preset" className="text-xs font-medium">
-                    策略预设
+                  <Label
+                    htmlFor="platform-preset"
+                    className="text-xs font-medium"
+                  >
+                    {t("platforms.preset")}
                   </Label>
                   {isAdmin ? (
                     <Select
@@ -877,12 +912,14 @@ function MountedPlatformWorkspace({
                             {p}
                           </SelectItem>
                         ))}
-                        <SelectItem value="none">不使用预设（默认拒绝）</SelectItem>
+                        <SelectItem value="none">
+                          {t("platforms.presetNone")}
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   ) : (
                     <code className="rounded bg-muted px-2 py-0.5 font-mono text-xs">
-                      {draft.preset ?? "无预设"}
+                      {draft.preset ?? t("overview.noPreset")}
                     </code>
                   )}
                 </div>
@@ -900,7 +937,9 @@ function MountedPlatformWorkspace({
                     ) : (
                       <ChevronRight className="size-3.5" />
                     )}
-                    预设内置规则 ({previewPresetRules.length} 条)
+                    {t("platforms.presetRules", {
+                      count: previewPresetRules.length,
+                    })}
                   </Button>
                 )}
               </div>
@@ -913,9 +952,11 @@ function MountedPlatformWorkspace({
             <div className="space-y-2.5">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <h3 className="text-xs font-medium">自定义规则</h3>
+                  <h3 className="text-xs font-medium">
+                    {t("platforms.customRules")}
+                  </h3>
                   <p className="text-[11px] text-muted-foreground">
-                    与预设共同生效，显式拒绝始终优先于允许规则。
+                    {t("platforms.customRulesDesc")}
                   </p>
                 </div>
                 {isAdmin && (
@@ -929,14 +970,14 @@ function MountedPlatformWorkspace({
                     }}
                   >
                     <Plus />
-                    添加规则
+                    {t("platforms.addRule")}
                   </Button>
                 )}
               </div>
 
               {draft.rules.length === 0 ? (
                 <div className="rounded-lg border border-dashed py-8 text-center text-xs text-muted-foreground">
-                  暂无自定义规则，当前完全按预设执行。
+                  {t("platforms.noCustomRules")}
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-lg border">
@@ -944,13 +985,21 @@ function MountedPlatformWorkspace({
                     <TableHeader>
                       <TableRow className="bg-muted/30 hover:bg-muted/30">
                         <TableHead className="w-[44px] text-xs">#</TableHead>
-                        <TableHead className="w-[84px] text-xs">动作</TableHead>
-                        <TableHead className="w-[120px] text-xs">方法</TableHead>
-                        <TableHead className="text-xs">主机</TableHead>
-                        <TableHead className="text-xs">路径</TableHead>
+                        <TableHead className="w-[84px] text-xs">
+                          {t("platforms.colAction")}
+                        </TableHead>
+                        <TableHead className="w-[120px] text-xs">
+                          {t("platforms.colMethod")}
+                        </TableHead>
+                        <TableHead className="text-xs">
+                          {t("platforms.colHost")}
+                        </TableHead>
+                        <TableHead className="text-xs">
+                          {t("platforms.colPath")}
+                        </TableHead>
                         {isAdmin && (
                           <TableHead className="w-[136px] text-right text-xs">
-                            操作
+                            {t("platforms.colActions")}
                           </TableHead>
                         )}
                       </TableRow>
@@ -980,7 +1029,7 @@ function MountedPlatformWorkspace({
                                   type="button"
                                   variant="ghost"
                                   size="icon-xs"
-                                  aria-label="上移"
+                                  aria-label={t("platforms.moveUp")}
                                   disabled={idx === 0}
                                   onClick={() => moveRule(idx, -1)}
                                 >
@@ -990,7 +1039,7 @@ function MountedPlatformWorkspace({
                                   type="button"
                                   variant="ghost"
                                   size="icon-xs"
-                                  aria-label="下移"
+                                  aria-label={t("platforms.moveDown")}
                                   disabled={idx === draft.rules.length - 1}
                                   onClick={() => moveRule(idx, 1)}
                                 >
@@ -1000,7 +1049,7 @@ function MountedPlatformWorkspace({
                                   type="button"
                                   variant="ghost"
                                   size="icon-xs"
-                                  aria-label="复制规则"
+                                  aria-label={t("platforms.duplicateRule")}
                                   onClick={() => duplicateRule(idx)}
                                 >
                                   <Copy className="size-3.5" />
@@ -1009,7 +1058,7 @@ function MountedPlatformWorkspace({
                                   type="button"
                                   variant="ghost"
                                   size="icon-xs"
-                                  aria-label="编辑规则"
+                                  aria-label={t("platforms.editRule")}
                                   onClick={() => {
                                     setEditingRuleIndex(idx)
                                     setRuleDialogOpen(true)
@@ -1021,7 +1070,7 @@ function MountedPlatformWorkspace({
                                   type="button"
                                   variant="ghost"
                                   size="icon-xs"
-                                  aria-label="删除规则"
+                                  aria-label={t("platforms.deleteRule")}
                                   className="hover:text-destructive"
                                   onClick={() => deleteRule(idx)}
                                 >
@@ -1052,14 +1101,16 @@ function MountedPlatformWorkspace({
               <Alert variant="destructive">
                 <CircleAlert />
                 <AlertDescription>
-                  服务端未配置 <code className="font-mono">CX_MASTER_KEY</code>，当前无法加密保存数据库凭据。
+                  {t("platforms.masterKeyMissingBefore")}{" "}
+                  <code className="font-mono">CX_MASTER_KEY</code>{" "}
+                  {t("platforms.masterKeyMissingAfter")}
                 </AlertDescription>
               </Alert>
             )}
 
             {platform.secrets.length === 0 ? (
               <div className="rounded-lg border border-dashed py-8 text-center text-xs text-muted-foreground">
-                此平台无需配置上游凭据。
+                {t("platforms.noSecretsNeeded")}
               </div>
             ) : (
               platform.secrets.map((slotStatus) => {
@@ -1109,7 +1160,9 @@ function MountedPlatformWorkspace({
                           {slotStatus.slot}
                         </span>
                         <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                          {bindingScope === "shared" ? "团队共享" : "成员个人"}
+                          {bindingScope === "shared"
+                            ? t("platforms.secretSharedTag")
+                            : t("platforms.secretPersonalTag")}
                         </span>
                       </div>
                       {slotStatus.name && (
@@ -1123,7 +1176,7 @@ function MountedPlatformWorkspace({
                       <div className="grid gap-3 border-b pb-3 sm:grid-cols-2">
                         <div className="space-y-1">
                           <Label className="text-[11px] text-muted-foreground">
-                            凭据范围
+                            {t("platforms.secretScope")}
                           </Label>
                           <Select
                             value={bindingScope}
@@ -1145,10 +1198,10 @@ function MountedPlatformWorkspace({
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="shared">
-                                团队共享（管理员维护）
+                                {t("platforms.secretSharedAdmin")}
                               </SelectItem>
                               <SelectItem value="personal">
-                                成员个人（默认跨 Profile 复用）
+                                {t("platforms.secretPersonal")}
                               </SelectItem>
                             </SelectContent>
                           </Select>
@@ -1156,7 +1209,7 @@ function MountedPlatformWorkspace({
 
                         <div className="space-y-1">
                           <Label className="text-[11px] text-muted-foreground">
-                            绑定名称
+                            {t("platforms.bindingName")}
                           </Label>
                           <Input
                             value={bindingName}
@@ -1196,7 +1249,7 @@ function MountedPlatformWorkspace({
 
                     {bindingUnsaved ? (
                       <p className="text-xs text-muted-foreground">
-                        凭据绑定已修改，请先点击右上角「保存变更」，再录入密钥值。
+                        {t("platforms.bindingUnsaved")}
                       </p>
                     ) : slotStatus.can_edit && savedDbName && savedDbScope ? (
                       <SecretValueForm
@@ -1212,11 +1265,11 @@ function MountedPlatformWorkspace({
                         {slotStatus.source === "db" &&
                         slotStatus.scope === "shared"
                           ? slotStatus.configured
-                            ? "团队共享凭据已由管理员配置就绪。"
-                            : "团队共享凭据尚未录入，请联系管理员配置。"
+                            ? t("platforms.sharedReady")
+                            : t("platforms.sharedMissing")
                           : slotStatus.configured
-                            ? "凭据已就绪。"
-                            : "凭据未配置。"}
+                            ? t("platforms.secretConfigured")
+                            : t("platforms.secretUnconfigured")}
                       </p>
                     )}
                   </div>
@@ -1229,7 +1282,9 @@ function MountedPlatformWorkspace({
           <TabsContent value="params" className="mt-4 space-y-4">
             {providerMeta && providerMeta.params.length > 0 && (
               <div className="space-y-3 rounded-lg border p-4">
-                <h3 className="text-xs font-medium">平台参数</h3>
+                <h3 className="text-xs font-medium">
+                  {t("platforms.paramsTitle")}
+                </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {providerMeta.params.map((p) => (
                     <div key={p.name} className="space-y-1">
@@ -1258,9 +1313,11 @@ function MountedPlatformWorkspace({
 
             <div className="space-y-3 rounded-lg border p-4">
               <div className="space-y-0.5">
-                <h3 className="text-xs font-medium">域名收窄（可选）</h3>
+                <h3 className="text-xs font-medium">
+                  {t("platforms.narrowHostsTitle")}
+                </h3>
                 <p className="text-[11px] text-muted-foreground">
-                  留空表示启用平台默认注入域名；填写后仅允许列表中的子集域名注入凭据（每行一个）。
+                  {t("platforms.narrowHostsDesc")}
                 </p>
               </div>
               <textarea
@@ -1273,7 +1330,9 @@ function MountedPlatformWorkspace({
               />
               {platform.server_tunnel_hosts.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
-                  <span className="text-muted-foreground">L4 TLS 透传域名：</span>
+                  <span className="text-muted-foreground">
+                    {t("platforms.l4TunnelHosts")}
+                  </span>
                   {platform.server_tunnel_hosts.map((h) => (
                     <code
                       key={h}
@@ -1309,6 +1368,7 @@ export function PlatformsPage({
   const { session } = useAuth()
   const { activeProfile, providers, sharedSecrets, setCreateDialogOpen } =
     useActiveProfile()
+  const { locale, t } = useI18n()
   const detailQuery = useProfileDetailQuery(activeProfile)
   const updateProfile = useUpdateProfileMutation(activeProfile)
 
@@ -1338,7 +1398,6 @@ export function PlatformsPage({
   const [selection, setSelection] = useState<Selection | null>(null)
   const [removeTarget, setRemoveTarget] = useState<PlatformDetail | null>(null)
 
-  // Initialize / reconcile selection when profile, URL param, or catalog changes
   useEffect(() => {
     if (openAdd && genericProvider && session?.context.admin) {
       setSelection({ kind: "new_generic" })
@@ -1381,7 +1440,6 @@ export function PlatformsPage({
         return selection
       }
     }
-    // Default: prefer the first mounted named provider, else first mounted custom instance, else first available provider
     const firstMountedNamed = namedProviders.find((p) => mountedById.has(p.id))
     if (firstMountedNamed) {
       return { kind: "provider", providerId: firstMountedNamed.id }
@@ -1410,23 +1468,23 @@ export function PlatformsPage({
   if (!activeProfile) {
     return (
       <div className="flex flex-col gap-5">
-        <PageHeader title="平台与规则" />
+        <PageHeader title={t("nav.platforms")} />
         <Card className="shadow-xs">
           <Empty className="border-0 py-14">
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <Blocks />
               </EmptyMedia>
-              <EmptyTitle className="text-base">请先创建或选择 Profile</EmptyTitle>
-              <EmptyDescription>
-                在左上角切换或新建 Profile 后即可查看所有可用平台并逐项配置。
-              </EmptyDescription>
+              <EmptyTitle className="text-base">
+                {t("platforms.emptyTitle")}
+              </EmptyTitle>
+              <EmptyDescription>{t("platforms.emptyDesc")}</EmptyDescription>
             </EmptyHeader>
             {isAdmin && (
               <EmptyContent>
                 <Button size="sm" onClick={() => setCreateDialogOpen(true)}>
                   <Plus />
-                  新建 Profile
+                  {t("sidebar.newProfile")}
                 </Button>
               </EmptyContent>
             )}
@@ -1460,8 +1518,10 @@ export function PlatformsPage({
     const next = [...detail.platforms.map((p) => p.spec), newSpec]
     const prov = providers.find((p) => p.id === newSpec.provider_id)
     const label =
-      newSpec.id === newSpec.provider_id && prov ? prov.name : newSpec.id
-    await savePlatforms(next, `已启用 ${label}`)
+      newSpec.id === newSpec.provider_id && prov
+        ? displayProviderName(prov.id, prov.name, locale)
+        : newSpec.id
+    await savePlatforms(next, t("platforms.toastEnabled", { label }))
     if (genericProvider && newSpec.provider_id === genericProvider.id) {
       setSelection({ kind: "custom", platformId: newSpec.id })
     } else {
@@ -1477,9 +1537,9 @@ export function PlatformsPage({
     const prov = providers.find((p) => p.id === updatedSpec.provider_id)
     const label =
       updatedSpec.id === updatedSpec.provider_id && prov
-        ? prov.name
+        ? displayProviderName(prov.id, prov.name, locale)
         : updatedSpec.id
-    await savePlatforms(next, `已保存 ${label} 配置并生效`)
+    await savePlatforms(next, t("platforms.toastSaved", { label }))
   }
 
   async function handleConfirmRemove() {
@@ -1491,9 +1551,13 @@ export function PlatformsPage({
     try {
       const label =
         target.spec.id === target.spec.provider_id
-          ? target.provider_name
+          ? displayProviderName(
+              target.spec.provider_id,
+              target.provider_name,
+              locale
+            )
           : target.spec.id
-      await savePlatforms(next, `已停用 ${label}`)
+      await savePlatforms(next, t("platforms.toastDisabled", { label }))
       setRemoveTarget(null)
       if (target.spec.id !== target.spec.provider_id) {
         setSelection(null)
@@ -1503,7 +1567,6 @@ export function PlatformsPage({
     }
   }
 
-  // Resolve right-hand panel content from effectiveSelection
   let selectedMounted: PlatformDetail | null = null
   let selectedUnmountedProvider: ProviderCatalogEntry | null = null
   let isNewGenericView = false
@@ -1528,10 +1591,20 @@ export function PlatformsPage({
       null)
     : null
 
+  const removeTargetLabel = removeTarget
+    ? removeTarget.spec.id === removeTarget.spec.provider_id
+      ? displayProviderName(
+          removeTarget.spec.provider_id,
+          removeTarget.provider_name,
+          locale
+        )
+      : removeTarget.spec.id
+    : ""
+
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
-        title="平台与规则"
+        title={t("nav.platforms")}
         actions={
           <Button
             variant="outline"
@@ -1542,7 +1615,7 @@ export function PlatformsPage({
             <RefreshCw
               className={detailQuery.isFetching ? "animate-spin" : undefined}
             />
-            刷新
+            {t("common.refresh")}
           </Button>
         }
       />
@@ -1563,10 +1636,9 @@ export function PlatformsPage({
         <div className="grid items-start gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
           {/* Unified All-Providers Rail */}
           <Card className="gap-0 p-2 shadow-xs">
-            {/* Named Providers Catalog (all available, enabled + unmounted) */}
             <div className="flex items-center justify-between px-2 py-1.5">
               <span className="text-[11px] font-medium text-muted-foreground">
-                可用平台 ({namedProviders.length})
+                {t("platforms.available", { count: namedProviders.length })}
               </span>
             </div>
 
@@ -1613,7 +1685,7 @@ export function PlatformsPage({
                     <div className="flex shrink-0 items-center gap-1.5">
                       {missingSecret && (
                         <span
-                          title="凭据尚未录入"
+                          title={t("platforms.secretMissingTitle")}
                           className="size-1.5 rounded-full bg-warning"
                         />
                       )}
@@ -1625,7 +1697,7 @@ export function PlatformsPage({
                             : "text-muted-foreground/70"
                         )}
                       >
-                        {mounted ? "已启用" : "未启用"}
+                        {mounted ? t("common.enabled") : t("common.disabled")}
                       </span>
                     </div>
                   </button>
@@ -1639,7 +1711,11 @@ export function PlatformsPage({
                 <Separator className="my-2" />
                 <div className="flex items-center justify-between px-2 py-1">
                   <span className="text-[11px] font-medium text-muted-foreground">
-                    {genericProvider.name}
+                    {displayProviderName(
+                      genericProvider.id,
+                      genericProvider.name,
+                      locale
+                    )}
                     {customHttpInstances.length > 0
                       ? ` (${customHttpInstances.length})`
                       : ""}
@@ -1653,7 +1729,7 @@ export function PlatformsPage({
                       onClick={() => setSelection({ kind: "new_generic" })}
                     >
                       <Plus className="size-3" />
-                      新增
+                      {t("common.add")}
                     </Button>
                   )}
                 </div>
@@ -1700,7 +1776,7 @@ export function PlatformsPage({
                         </div>
                         {missingSecret && (
                           <span
-                            title="凭据尚未录入"
+                            title={t("platforms.secretMissingTitle")}
                             className="size-1.5 shrink-0 rounded-full bg-warning"
                           />
                         )}
@@ -1721,7 +1797,7 @@ export function PlatformsPage({
                       )}
                     >
                       <Plus className="size-3.5 shrink-0" />
-                      <span>添加自定义 HTTP 服务</span>
+                      <span>{t("platforms.addCustomHttp")}</span>
                     </button>
                   )}
                 </div>
@@ -1776,21 +1852,15 @@ export function PlatformsPage({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              停用{" "}
-              {removeTarget
-                ? removeTarget.spec.id === removeTarget.spec.provider_id
-                  ? removeTarget.provider_name
-                  : removeTarget.spec.id
-                : ""}
-              ？
+              {t("platforms.disableTitle", { name: removeTargetLabel })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              停用后，{activeProfile} 将不再拦截或向该平台域名注入凭据（已保存的加密凭据本身不会被删除，随时可重新启用）。
+              {t("platforms.disableDesc", { profile: activeProfile })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={updateProfile.isPending}>
-              取消
+              {t("common.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(e) => {
@@ -1800,7 +1870,9 @@ export function PlatformsPage({
               disabled={updateProfile.isPending}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {updateProfile.isPending ? "停用中…" : "确认停用"}
+              {updateProfile.isPending
+                ? t("platforms.disabling")
+                : t("platforms.confirmDisable")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

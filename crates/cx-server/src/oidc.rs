@@ -39,6 +39,7 @@ pub struct VerifiedOidcIdentity {
     pub subject: String,
     pub email: String,
     pub display_name: String,
+    pub avatar_url: Option<String>,
     pub groups: Vec<String>,
 }
 
@@ -164,10 +165,43 @@ impl OidcClient {
         #[derive(Deserialize)]
         struct TokenResponse {
             id_token: String,
+            #[serde(default)]
+            access_token: Option<String>,
         }
         let tok: TokenResponse = resp.json().await?;
-        self.verify_id_token(&tok.id_token, &doc.issuer, expected_nonce)
+        let mut identity = self
+            .verify_id_token(&tok.id_token, &doc.issuer, expected_nonce)
+            .await?;
+
+        if identity.avatar_url.is_none() {
+            if let (Some(endpoint), Some(access_token)) =
+                (doc.userinfo_endpoint.as_deref(), tok.access_token.as_deref())
+            {
+                if let Some(picture) = self.fetch_userinfo_picture(endpoint, access_token).await {
+                    identity.avatar_url = Some(picture);
+                }
+            }
+        }
+
+        Ok(identity)
+    }
+
+    async fn fetch_userinfo_picture(&self, endpoint: &str, access_token: &str) -> Option<String> {
+        let resp = self
+            .http
+            .get(endpoint)
+            .bearer_auth(access_token)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
             .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let body: Value = resp.json().await.ok()?;
+        body.get("picture")
+            .and_then(|v| v.as_str())
+            .and_then(sanitize_avatar_url)
     }
 
     async fn verify_id_token(
@@ -232,6 +266,11 @@ impl OidcClient {
             .unwrap_or(&email)
             .to_string();
 
+        let avatar_url = claims
+            .get("picture")
+            .and_then(|v| v.as_str())
+            .and_then(sanitize_avatar_url);
+
         let groups = extract_dot_path_string_array(&claims, &self.config.groups_claim);
 
         Ok(VerifiedOidcIdentity {
@@ -239,8 +278,28 @@ impl OidcClient {
             subject,
             email,
             display_name,
+            avatar_url,
             groups,
         })
+    }
+}
+
+pub fn sanitize_avatar_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > 2048 {
+        return None;
+    }
+    if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(trimmed).ok()?;
+    match parsed.scheme() {
+        "https" => Some(trimmed.to_string()),
+        "http" => match parsed.host_str() {
+            Some("localhost" | "127.0.0.1" | "::1") => Some(trimmed.to_string()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -268,5 +327,26 @@ pub fn extract_dot_path_string_array(claims: &Value, path: &str) -> Vec<String> 
             .collect(),
         Value::String(s) => vec![s.clone()],
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_avatar_url;
+
+    #[test]
+    fn sanitizes_oidc_avatar_urls() {
+        assert_eq!(
+            sanitize_avatar_url("https://id.nokiy.net/api/users/123/profile-picture.png").as_deref(),
+            Some("https://id.nokiy.net/api/users/123/profile-picture.png")
+        );
+        assert_eq!(
+            sanitize_avatar_url("http://127.0.0.1:5556/avatar.png").as_deref(),
+            Some("http://127.0.0.1:5556/avatar.png")
+        );
+        assert!(sanitize_avatar_url("http://evil.example.com/avatar.png").is_none());
+        assert!(sanitize_avatar_url("javascript:alert(1)").is_none());
+        assert!(sanitize_avatar_url("data:image/svg+xml,<svg/>").is_none());
+        assert!(sanitize_avatar_url("https://id.nokiy.net/a b").is_none());
     }
 }
