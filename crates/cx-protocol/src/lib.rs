@@ -314,9 +314,20 @@ pub struct UserSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfilePlatformSummary {
+    pub id: String,
+    pub provider_id: String,
+    pub inject_hosts: Vec<String>,
+    pub server_tunnel_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileSummary {
     pub name: String,
-    pub plugin_id: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub platforms: Vec<ProfilePlatformSummary>,
     pub inject_hosts: Vec<String>,
     pub server_tunnel_hosts: Vec<String>,
     pub default_action: DefaultRouteAction,
@@ -356,6 +367,9 @@ pub struct CreateScopedTokenResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateVirtualKeyRequest {
     pub profile: String,
+    /// Platform binding ID within the profile (auto-inferred if the profile has exactly one platform).
+    #[serde(default)]
+    pub platform: Option<String>,
     pub ttl_secs: Option<u64>,
 }
 
@@ -364,6 +378,7 @@ pub struct CreateVirtualKeyResponse {
     pub id: String,
     pub virtual_key: String,
     pub profile: String,
+    pub platform: String,
     pub expires_at: Option<i64>,
 }
 

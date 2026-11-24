@@ -11,3 +11,5 @@
 .env.*
 *.md
 mise.toml
+/web/node_modules
+/web/dist

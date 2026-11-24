@@ -2,21 +2,22 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Redirect};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use cx_crypto::{
     SessionClaims, SessionSigner, constant_time_eq_str, generate_random_token, hash_secret_hex,
 };
-use cx_plugin::ResolvedProfile;
+use cx_plugin::{ProviderRegistry, ResolvedProfile};
 use cx_protocol::{
     CliLoginPollRequest, CliLoginPollResponse, CliLoginStartResponse, CreateScopedTokenRequest,
     CreateScopedTokenResponse, CreateSessionRequest, CreateSessionResponse,
-    CreateVirtualKeyRequest, CreateVirtualKeyResponse, ProfileSummary, UpsertSecretRequest,
-    UserSummary,
+    CreateVirtualKeyRequest, CreateVirtualKeyResponse, ProfilePlatformSummary, ProfileSummary,
+    UpsertSecretRequest, UserSummary,
 };
 use ipnet::IpNet;
 use serde::Deserialize;
@@ -35,7 +36,9 @@ pub struct ControlPlaneState {
     pub signer: SessionSigner,
     pub store: Arc<dyn ServerStore>,
     pub oidc: Option<Arc<OidcClient>>,
-    pub profiles: Arc<BTreeMap<String, Arc<ResolvedProfile>>>,
+    pub profiles: Arc<ArcSwap<BTreeMap<String, Arc<ResolvedProfile>>>>,
+    pub registry: ProviderRegistry,
+    pub profile_write: tokio::sync::Mutex<()>,
 }
 
 pub fn build_router(state: Arc<ControlPlaneState>) -> Router {
@@ -52,6 +55,16 @@ pub fn build_router(state: Arc<ControlPlaneState>) -> Router {
         .route("/v1/tokens", post(create_scoped_token))
         .route("/v1/virtual-keys", post(create_virtual_key))
         .route("/v1/secrets", post(upsert_secret))
+        .merge(crate::console::router())
+        .layer(axum::middleware::map_response(
+            |mut response: axum::response::Response| async move {
+                response
+                    .headers_mut()
+                    .entry(axum::http::header::CACHE_CONTROL)
+                    .or_insert(axum::http::HeaderValue::from_static("no-store"));
+                response
+            },
+        ))
         .with_state(state)
 }
 
@@ -83,26 +96,104 @@ fn extract_client_ip(
     peer.ip().to_string()
 }
 
-async fn authenticate_request(
+pub(crate) const CONSOLE_SESSION_COOKIE: &str = "cx_console_session";
+pub(crate) const CONSOLE_OIDC_TX_COOKIE: &str = "cx_oidc_tx";
+pub(crate) const CONSOLE_CSRF_HEADER: &str = "x-cx-console";
+pub(crate) const WEB_OIDC_PENDING_STATUS: &str = "web_pending";
+pub(crate) const WEB_SESSION_TTL_SECS: i64 = 24 * 3600;
+
+pub(crate) fn is_https_external_url(external_url: &str) -> bool {
+    external_url
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("https://")
+}
+
+pub(crate) fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    for raw in headers.get_all(header::COOKIE) {
+        let Ok(cookie_header) = raw.to_str() else {
+            continue;
+        };
+        for pair in cookie_header.split(';') {
+            let Some((k, v)) = pair.trim().split_once('=') else {
+                continue;
+            };
+            if k.trim() == name {
+                let value = v.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn build_cookie(name: &str, value: &str, max_age_secs: i64, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{name}={value}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_secs}{secure_attr}"
+    )
+}
+
+pub(crate) fn check_console_csrf(headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+    let has_header = headers
+        .get(CONSOLE_CSRF_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == "1");
+    if !has_header {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "missing required X-CX-Console header for cookie authentication".into(),
+        ));
+    }
+    if let Some(site) = headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+    {
+        if site.eq_ignore_ascii_case("cross-site") {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "cross-site cookie authentication is forbidden".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn authenticate_request(
     state: &ControlPlaneState,
     headers: &HeaderMap,
 ) -> Result<AuthPrincipal, (StatusCode, String)> {
-    let auth = headers
+    if let Some(auth) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .ok_or((StatusCode::UNAUTHORIZED, "missing Authorization header".into()))?;
-    let token = auth
-        .strip_prefix("Bearer ")
-        .or_else(|| auth.strip_prefix("bearer "))
-        .map(str::trim)
-        .ok_or((StatusCode::UNAUTHORIZED, "expected Bearer token".into()))?;
+    {
+        let token = auth
+            .strip_prefix("Bearer ")
+            .or_else(|| auth.strip_prefix("bearer "))
+            .map(str::trim)
+            .ok_or((StatusCode::UNAUTHORIZED, "expected Bearer token".into()))?;
 
-    state
-        .store
-        .verify_access_token(token)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::UNAUTHORIZED, "invalid or expired token".into()))
+        return state
+            .store
+            .verify_access_token(token)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((StatusCode::UNAUTHORIZED, "invalid or expired token".into()));
+    }
+
+    if let Some(cookie_token) = extract_cookie(headers, CONSOLE_SESSION_COOKIE) {
+        check_console_csrf(headers)?;
+        return state
+            .store
+            .verify_access_token(&cookie_token)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((StatusCode::UNAUTHORIZED, "invalid or expired session".into()));
+    }
+
+    Err((StatusCode::UNAUTHORIZED, "missing Authorization header".into()))
 }
 
 fn to_user_summary(u: &UserRecord) -> UserSummary {
@@ -204,32 +295,183 @@ async fn cli_login_browser_start(
 
 #[derive(Deserialize)]
 struct OidcCallbackQuery {
-    code: String,
-    state: String,
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn web_oidc_error_redirect(code: &str, secure: bool) -> Response {
+    let mut response = Redirect::to(&format!("/ui/?auth_error={code}")).into_response();
+    if let Ok(clear_tx) = HeaderValue::from_str(&build_cookie(CONSOLE_OIDC_TX_COOKIE, "", 0, secure))
+    {
+        response.headers_mut().append(header::SET_COOKIE, clear_tx);
+    }
+    response
 }
 
 async fn oidc_callback(
     State(state): State<Arc<ControlPlaneState>>,
+    headers: HeaderMap,
     Query(q): Query<OidcCallbackQuery>,
-) -> Result<Html<String>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     let oidc = state
         .oidc
         .as_ref()
         .ok_or((StatusCode::BAD_REQUEST, "OIDC not configured".into()))?;
 
+    let secure = is_https_external_url(&state.external_url);
+    let Some(state_param) = q.state.as_deref() else {
+        return Err((StatusCode::BAD_REQUEST, "missing OIDC state".into()));
+    };
+
     let rec = state
         .store
-        .get_cli_login_by_state(&q.state)
+        .get_cli_login_by_state(state_param)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::BAD_REQUEST, "unknown OIDC state".into()))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let Some(rec) = rec else {
+        if state_param.starts_with("cxweb_") {
+            return Ok(web_oidc_error_redirect("oidc_expired", secure));
+        }
+        return Err((StatusCode::BAD_REQUEST, "unknown OIDC state".into()));
+    };
+
+    if rec.status == WEB_OIDC_PENDING_STATUS || rec.oidc_state.starts_with("cxweb_") {
+        if rec.status != WEB_OIDC_PENDING_STATUS {
+            return Ok(web_oidc_error_redirect("oidc_expired", secure));
+        }
+        let tx_ok = extract_cookie(&headers, CONSOLE_OIDC_TX_COOKIE)
+            .is_some_and(|tx| constant_time_eq_str(&hash_secret_hex(&tx), &rec.poll_secret_hash));
+        if !tx_ok {
+            return Ok(web_oidc_error_redirect("oidc_invalid_session", secure));
+        }
+
+        if let Some(err_code) = q.error.as_deref() {
+            let _ = state
+                .store
+                .consume_cli_login_if_status(&rec.login_id, WEB_OIDC_PENDING_STATUS)
+                .await;
+            tracing::warn!(
+                error = %err_code,
+                description = ?q.error_description,
+                "web console OIDC provider returned error"
+            );
+            let mapped = if err_code == "access_denied" {
+                "oidc_access_denied"
+            } else {
+                "oidc_failed"
+            };
+            return Ok(web_oidc_error_redirect(mapped, secure));
+        }
+
+        if Utc::now().timestamp() > rec.expires_at {
+            let _ = state
+                .store
+                .consume_cli_login_if_status(&rec.login_id, WEB_OIDC_PENDING_STATUS)
+                .await;
+            return Ok(web_oidc_error_redirect("oidc_expired", secure));
+        }
+
+        let Some(code) = q.code.as_deref() else {
+            return Ok(web_oidc_error_redirect("oidc_failed", secure));
+        };
+
+        let claimed = state
+            .store
+            .consume_cli_login_if_status(&rec.login_id, WEB_OIDC_PENDING_STATUS)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if !claimed {
+            return Ok(web_oidc_error_redirect("oidc_expired", secure));
+        }
+
+        let identity = match oidc
+            .exchange_and_verify(code, &rec.pkce_verifier, &rec.oidc_nonce)
+            .await
+        {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!(error = %err, "web console OIDC token verification failed");
+                return Ok(web_oidc_error_redirect("oidc_verification_failed", secure));
+            }
+        };
+
+        let user = state
+            .store
+            .upsert_user(
+                &identity.issuer,
+                &identity.subject,
+                &identity.email,
+                &identity.display_name,
+                &identity.groups,
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let raw_access_token = generate_random_token("cx_web_", 40);
+        let token_exp = Utc::now().timestamp() + WEB_SESSION_TTL_SECS;
+        state
+            .store
+            .insert_access_token(
+                &user.id,
+                "oidc-web-console",
+                &raw_access_token,
+                None,
+                token_exp,
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let mut response = Redirect::to("/ui/").into_response();
+        let session_cookie = build_cookie(
+            CONSOLE_SESSION_COOKIE,
+            &raw_access_token,
+            WEB_SESSION_TTL_SECS,
+            secure,
+        );
+        let clear_tx_cookie = build_cookie(CONSOLE_OIDC_TX_COOKIE, "", 0, secure);
+        if let Ok(val) = HeaderValue::from_str(&session_cookie) {
+            response.headers_mut().append(header::SET_COOKIE, val);
+        }
+        if let Ok(val) = HeaderValue::from_str(&clear_tx_cookie) {
+            response.headers_mut().append(header::SET_COOKIE, val);
+        }
+        return Ok(response);
+    }
+
+    if let Some(err_code) = q.error {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            format!(
+                "OIDC provider returned error: {err_code}{}",
+                q.error_description
+                    .map(|d| format!(" ({d})"))
+                    .unwrap_or_default()
+            ),
+        ));
+    }
 
     if rec.status != "pending" || Utc::now().timestamp() > rec.expires_at {
         return Err((StatusCode::GONE, "login session expired".into()));
     }
 
+    let Some(code) = q.code else {
+        return Err((StatusCode::BAD_REQUEST, "missing OIDC authorization code".into()));
+    };
+
     let identity = oidc
-        .exchange_and_verify(&q.code, &rec.pkce_verifier, &rec.oidc_nonce)
+        .exchange_and_verify(&code, &rec.pkce_verifier, &rec.oidc_nonce)
         .await
         .map_err(|e| (StatusCode::UNAUTHORIZED, format!("OIDC verification failed: {e}")))?;
 
@@ -261,8 +503,9 @@ async fn oidc_callback(
 
     Ok(Html(format!(
         "<html><body><h2>cx login succeeded</h2><p>Signed in as <b>{}</b>. You may close this tab and return to your terminal.</p></body></html>",
-        user.email
-    )))
+        escape_html(&user.email)
+    ))
+    .into_response())
 }
 
 async fn cli_login_poll(
@@ -275,6 +518,10 @@ async fn cli_login_poll(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "unknown login_id".into()))?;
+
+    if rec.status == WEB_OIDC_PENDING_STATUS {
+        return Err((StatusCode::BAD_REQUEST, "not a CLI login session".into()));
+    }
 
     if !constant_time_eq_str(&hash_secret_hex(&req.poll_secret), &rec.poll_secret_hash) {
         return Err((StatusCode::UNAUTHORIZED, "invalid poll_secret".into()));
@@ -330,6 +577,7 @@ async fn list_profiles(
     let principal = authenticate_request(&state, &headers).await?;
     let list = state
         .profiles
+        .load()
         .values()
         .filter(|p| {
             let group_ok = p.user_has_access(
@@ -346,7 +594,17 @@ async fn list_profiles(
         })
         .map(|p| ProfileSummary {
             name: p.name.clone(),
-            plugin_id: p.provider_id.clone(),
+            description: p.description.clone(),
+            platforms: p
+                .platforms
+                .values()
+                .map(|plat| ProfilePlatformSummary {
+                    id: plat.id.clone(),
+                    provider_id: plat.provider_id.clone(),
+                    inject_hosts: plat.inject_hosts.clone(),
+                    server_tunnel_hosts: plat.server_tunnel_hosts.clone(),
+                })
+                .collect(),
             inject_hosts: p.routing.inject_hosts.clone(),
             server_tunnel_hosts: p.routing.server_tunnel_hosts.clone(),
             default_action: p.routing.default_action,
@@ -364,7 +622,9 @@ async fn create_session(
     let principal = authenticate_request(&state, &headers).await?;
     let profile = state
         .profiles
+        .load_full()
         .get(&req.profile)
+        .cloned()
         .ok_or((
             StatusCode::NOT_FOUND,
             format!("profile '{}' not found", req.profile),
@@ -390,7 +650,11 @@ async fn create_session(
     }
 
     let session_id = format!("sess_{}", Uuid::new_v4().simple());
-    let ephemeral_vk = profile.generate_virtual_key();
+    let ephemeral_vks = profile.generate_ephemeral_virtual_keys();
+    let vk_hashes: BTreeMap<String, String> = ephemeral_vks
+        .iter()
+        .map(|(platform_id, vk)| (platform_id.clone(), hash_secret_hex(vk)))
+        .collect();
     let now = Utc::now().timestamp();
     let exp = now + state.session_ttl_secs as i64;
     let client_ip = extract_client_ip(peer, &headers, &state.trusted_proxies);
@@ -401,7 +665,7 @@ async fn create_session(
         email: principal.user.email.clone(),
         groups: principal.user.groups.clone(),
         profile: profile.name.clone(),
-        vk_hash: hash_secret_hex(&ephemeral_vk),
+        vk_hashes,
         client_ip,
         iat: now,
         exp,
@@ -412,7 +676,7 @@ async fn create_session(
         .sign(&claims)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let client = profile.build_client_launch_spec(&ephemeral_vk);
+    let client = profile.build_client_launch_spec(&ephemeral_vks);
 
     Ok(Json(CreateSessionResponse {
         session_id,
@@ -446,8 +710,21 @@ async fn create_scoped_token(
     Json(req): Json<CreateScopedTokenRequest>,
 ) -> Result<Json<CreateScopedTokenResponse>, (StatusCode, String)> {
     let principal = authenticate_request(&state, &headers).await?;
+    if principal.allowed_profiles.as_ref().is_some_and(|allowed| {
+        req.profiles.is_empty()
+            || req
+                .profiles
+                .iter()
+                .any(|profile| !allowed.contains(profile))
+    }) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "token cannot grant broader profile access".into(),
+        ));
+    }
+    let profiles = state.profiles.load_full();
     for p in &req.profiles {
-        let Some(prof) = state.profiles.get(p) else {
+        let Some(prof) = profiles.get(p) else {
             return Err((StatusCode::NOT_FOUND, format!("profile '{p}' not found")));
         };
         if !prof.user_has_access(
@@ -497,7 +774,9 @@ async fn create_virtual_key(
     let principal = authenticate_request(&state, &headers).await?;
     let profile = state
         .profiles
+        .load_full()
         .get(&req.profile)
+        .cloned()
         .ok_or((
             StatusCode::NOT_FOUND,
             format!("profile '{}' not found", req.profile),
@@ -510,13 +789,53 @@ async fn create_virtual_key(
         return Err((StatusCode::FORBIDDEN, "forbidden for this profile".into()));
     }
 
-    let vk = profile.generate_virtual_key();
+    if principal
+        .allowed_profiles
+        .as_ref()
+        .is_some_and(|allowed| !allowed.contains(&req.profile))
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "token cannot access this profile".into(),
+        ));
+    }
+    let platform = match req.platform.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(plat_id) => profile.platforms.get(plat_id).ok_or((
+            StatusCode::NOT_FOUND,
+            format!("platform '{}' not found in profile '{}'", plat_id, profile.name),
+        ))?,
+        None if profile.platforms.len() == 1 => profile.platforms.values().next().unwrap(),
+        None if profile.platforms.is_empty() => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("profile '{}' has no attached platforms", profile.name),
+            ));
+        }
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "profile '{}' has multiple platforms; specify 'platform'",
+                    profile.name
+                ),
+            ));
+        }
+    };
+
+    let vk = platform.virtual_key.generate();
     let expires_at = req
         .ttl_secs
-        .map(|s| Utc::now().timestamp() + s as i64);
+        .map(|seconds| {
+            i64::try_from(seconds)
+                .ok()
+                .filter(|seconds| *seconds > 0)
+                .and_then(|seconds| Utc::now().timestamp().checked_add(seconds))
+                .ok_or((StatusCode::BAD_REQUEST, "invalid key lifetime".into()))
+        })
+        .transpose()?;
     let id = state
         .store
-        .create_virtual_key(&principal.user.id, &profile.name, &vk, expires_at)
+        .create_virtual_key(&principal.user.id, &profile.name, &platform.id, &vk, expires_at)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -524,6 +843,7 @@ async fn create_virtual_key(
         id,
         virtual_key: vk,
         profile: profile.name.clone(),
+        platform: platform.id.clone(),
         expires_at,
     }))
 }
@@ -534,6 +854,12 @@ async fn upsert_secret(
     Json(req): Json<UpsertSecretRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let principal = authenticate_request(&state, &headers).await?;
+    if principal.allowed_profiles.is_some() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "unscoped token required to update secrets".into(),
+        ));
+    }
     let owner = match req.scope.as_str() {
         "shared" => {
             let is_admin = principal

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
@@ -25,8 +27,9 @@ pub struct SessionClaims {
     pub email: String,
     pub groups: Vec<String>,
     pub profile: String,
-    /// SHA-256 hex digest of the session's ephemeral virtual key.
-    pub vk_hash: String,
+    /// Map of `platform_id -> SHA-256 hex digest` of each platform's ephemeral virtual key.
+    #[serde(default)]
+    pub vk_hashes: BTreeMap<String, String>,
     /// Verified client IP captured at the L7 control plane.
     pub client_ip: String,
     pub iat: i64,

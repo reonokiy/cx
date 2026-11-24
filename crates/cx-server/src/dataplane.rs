@@ -35,13 +35,14 @@ const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 pub struct AuthenticatedSession {
     pub claims: SessionClaims,
     pub profile: Arc<ResolvedProfile>,
-    pub allowed_vk_hashes: Vec<String>,
+    /// Allowed virtual key hashes strictly partitioned by `platform_id`.
+    pub allowed_vk_hashes: BTreeMap<String, Vec<String>>,
 }
 
 pub struct DataPlaneHandler {
     pub verifier: SessionVerifier,
     pub store: Arc<dyn ServerStore>,
-    pub profiles: Arc<BTreeMap<String, Arc<ResolvedProfile>>>,
+    pub profiles: Arc<arc_swap::ArcSwap<BTreeMap<String, Arc<ResolvedProfile>>>>,
     pub ssrf_policy: Arc<SsrfPolicy>,
     pub upstream_tls: TlsConnector,
 }
@@ -130,19 +131,31 @@ impl TunnelHandler for DataPlaneHandler {
 
         let profile = self
             .profiles
+            .load()
             .get(&claims.profile)
             .cloned()
             .ok_or_else(|| {
                 CxGatewayError::new("UNKNOWN_PROFILE", format!("profile '{}' not found", claims.profile))
             })?;
 
-        let mut allowed_vk_hashes = vec![claims.vk_hash.clone()];
-        if let Ok(static_hashes) = self
+        let mut allowed_vk_hashes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (platform_id, ephemeral_hash) in &claims.vk_hashes {
+            allowed_vk_hashes
+                .entry(platform_id.clone())
+                .or_default()
+                .push(ephemeral_hash.clone());
+        }
+        if let Ok(static_map) = self
             .store
             .list_active_virtual_key_hashes(&claims.uid, &claims.profile)
             .await
         {
-            allowed_vk_hashes.extend(static_hashes);
+            for (platform_id, hashes) in static_map {
+                allowed_vk_hashes
+                    .entry(platform_id)
+                    .or_default()
+                    .extend(hashes);
+            }
         }
 
         info!(
@@ -168,7 +181,29 @@ impl TunnelHandler for DataPlaneHandler {
         mut recv: RecvStream,
     ) {
         let started = Instant::now();
-        let route = session.profile.routing.resolve(&meta.host, meta.port);
+
+        // Always read the latest profile snapshot so WebUI rule/platform edits apply immediately.
+        let profiles = self.profiles.load_full();
+        let Some(profile) = profiles.get(&session.profile.name) else {
+            let reason = format!("profile '{}' no longer exists", session.profile.name);
+            self.record_l7_audit(
+                &session,
+                "",
+                &meta,
+                "deny",
+                Some(403),
+                "deny",
+                Some(reason.clone()),
+                started,
+            )
+            .await;
+            let _ = write_l7_error(&mut send, 403, "PROFILE_REMOVED", &reason).await;
+            return;
+        };
+
+        let route = profile.routing.resolve(&meta.host, meta.port);
+        let owning_platform = profile.find_platform_for_l7_host(&meta.host);
+        let platform_id = owning_platform.map(|p| p.id.as_str()).unwrap_or("");
 
         let route_tier = match route {
             RouteDecision::Inject => "inject",
@@ -176,10 +211,11 @@ impl TunnelHandler for DataPlaneHandler {
             _ => {
                 let reason = format!(
                     "host '{}' is not allowed for L7 processing on profile '{}'",
-                    meta.host, session.profile.name
+                    meta.host, profile.name
                 );
                 self.record_l7_audit(
                     &session,
+                    platform_id,
                     &meta,
                     "deny",
                     Some(403),
@@ -193,15 +229,35 @@ impl TunnelHandler for DataPlaneHandler {
             }
         };
 
-        // L7 policy engine evaluation (deny-by-default)
+        let Some(platform) = owning_platform else {
+            let reason = format!(
+                "no platform owns host '{}' in profile '{}'",
+                meta.host, profile.name
+            );
+            self.record_l7_audit(
+                &session,
+                "",
+                &meta,
+                route_tier,
+                Some(403),
+                "deny",
+                Some(reason.clone()),
+                started,
+            )
+            .await;
+            let _ = write_l7_error(&mut send, 403, "PLATFORM_NOT_FOUND", &reason).await;
+            return;
+        };
+
+        // Evaluate policy strictly within the owning platform so rules never bleed across platforms.
         if let PolicyDecision::Deny(reason) =
-            session
-                .profile
+            platform
                 .policy
                 .evaluate(&meta.method, &meta.host, &meta.path_and_query)
         {
             self.record_l7_audit(
                 &session,
+                &platform.id,
                 &meta,
                 route_tier,
                 Some(403),
@@ -249,11 +305,10 @@ impl TunnelHandler for DataPlaneHandler {
             headers: meta.headers.clone(),
         };
 
-        // Slot-scoped secret injection (ONLY for Tier 1 `inject`, strictly host + scheme bound)
+        // Platform-scoped secret injection (ONLY resolves & scrubs the owning platform's secrets)
         let mut secrets_for_scrub: Vec<SecretString> = Vec::new();
         if route == RouteDecision::Inject {
-            let matching_injectors: Vec<_> = session
-                .profile
+            let matching_injectors: Vec<_> = platform
                 .injectors
                 .iter()
                 .filter(|inj| inj.matches_target(&upstream_req.host, &upstream_req.scheme))
@@ -261,13 +316,14 @@ impl TunnelHandler for DataPlaneHandler {
 
             if !matching_injectors.is_empty() {
                 let secret_map = match self
-                    .resolve_secret_map(&session.profile.secret_bindings, &session.claims.uid)
+                    .resolve_secret_map(&platform.secret_bindings, &session.claims.uid)
                     .await
                 {
                     Ok(m) => m,
                     Err(e) => {
                         self.record_l7_audit(
                             &session,
+                            &platform.id,
                             &meta,
                             route_tier,
                             Some(502),
@@ -281,20 +337,31 @@ impl TunnelHandler for DataPlaneHandler {
                     }
                 };
 
+                let empty_hashes = Vec::new();
+                let platform_vk_hashes = session
+                    .allowed_vk_hashes
+                    .get(&platform.id)
+                    .unwrap_or(&empty_hashes);
                 let ctx = InjectionContext {
-                    allowed_vk_hashes: &session.allowed_vk_hashes,
+                    allowed_vk_hashes: platform_vk_hashes,
                 };
 
                 for inj in matching_injectors {
                     match inj.inject(&mut upstream_req, &ctx, &secret_map).await {
                         Ok(InjectionOutcome::Injected) => {
-                            debug!(injector = inj.id(), host = %upstream_req.host, "credential injected");
+                            debug!(
+                                platform = %platform.id,
+                                injector = inj.id(),
+                                host = %upstream_req.host,
+                                "credential injected"
+                            );
                         }
                         Ok(InjectionOutcome::NoMatchingCredentialPresented) => {}
                         Err(e) => {
                             let msg = e.to_string();
                             self.record_l7_audit(
                                 &session,
+                                &platform.id,
                                 &meta,
                                 route_tier,
                                 Some(403),
@@ -320,7 +387,6 @@ impl TunnelHandler for DataPlaneHandler {
                 scrub_headers(&mut resp_headers, &secret_refs);
                 let scrubbed_body = scrub_bytes(&resp_body, &secret_refs);
 
-                // Adjust Content-Length if scrubbing changed body length
                 if scrubbed_body.len() != resp_body.len() {
                     resp_headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-length"));
                     resp_headers.push((
@@ -329,9 +395,9 @@ impl TunnelHandler for DataPlaneHandler {
                     ));
                 }
 
-                // Commit audit log before completing the QUIC response stream so audit visibility is synchronous.
                 self.record_l7_audit(
                     &session,
+                    &platform.id,
                     &meta,
                     route_tier,
                     Some(status),
@@ -355,6 +421,7 @@ impl TunnelHandler for DataPlaneHandler {
                 let msg = err.to_string();
                 self.record_l7_audit(
                     &session,
+                    &platform.id,
                     &meta,
                     route_tier,
                     Some(502),
@@ -376,14 +443,29 @@ impl TunnelHandler for DataPlaneHandler {
         mut recv: RecvStream,
     ) {
         let started = Instant::now();
-        let route = session.profile.routing.resolve(&meta.host, meta.port);
+        let profiles = self.profiles.load_full();
+        let profile = profiles
+            .get(&session.profile.name)
+            .unwrap_or(&session.profile);
+        let platform_id = profile
+            .find_platform_for_l4_host(&meta.host, meta.port)
+            .map(|p| p.id.as_str())
+            .unwrap_or("");
+        let route = profile.routing.resolve(&meta.host, meta.port);
         if route != RouteDecision::ServerTunnel {
             let reason = format!(
                 "L4 server_tunnel denied for {}:{} on profile '{}'",
-                meta.host, meta.port, session.profile.name
+                meta.host, meta.port, profile.name
             );
-            self.record_l4_audit(&session, &meta, "deny", Some(reason.clone()), started)
-                .await;
+            self.record_l4_audit(
+                &session,
+                platform_id,
+                &meta,
+                "deny",
+                Some(reason.clone()),
+                started,
+            )
+            .await;
             let _ = write_frame(
                 &mut send,
                 &ConnectAck {
@@ -400,8 +482,15 @@ impl TunnelHandler for DataPlaneHandler {
             Ok(s) => s,
             Err(e) => {
                 let reason = e.to_string();
-                self.record_l4_audit(&session, &meta, "deny", Some(reason.clone()), started)
-                    .await;
+                self.record_l4_audit(
+                    &session,
+                    platform_id,
+                    &meta,
+                    "deny",
+                    Some(reason.clone()),
+                    started,
+                )
+                .await;
                 let _ = write_frame(
                     &mut send,
                     &ConnectAck {
@@ -426,7 +515,7 @@ impl TunnelHandler for DataPlaneHandler {
         let c2s = tokio::io::copy(&mut recv, &mut up_w);
         let s2c = tokio::io::copy(&mut up_r, &mut send);
         let _ = tokio::join!(c2s, s2c);
-        self.record_l4_audit(&session, &meta, "allow", None, started)
+        self.record_l4_audit(&session, platform_id, &meta, "allow", None, started)
             .await;
         let _ = send.finish();
     }
@@ -510,6 +599,7 @@ impl DataPlaneHandler {
     async fn record_l7_audit(
         &self,
         session: &AuthenticatedSession,
+        platform_id: &str,
         meta: &RequestMeta,
         route_tier: &str,
         status_code: Option<u16>,
@@ -531,6 +621,7 @@ impl DataPlaneHandler {
                 user_email: session.claims.email.clone(),
                 session_id: session.claims.sid.clone(),
                 profile_name: session.profile.name.clone(),
+                platform_id: platform_id.to_string(),
                 route_tier: route_tier.to_string(),
                 target_host: meta.host.clone(),
                 target_port: meta.port,
@@ -551,6 +642,7 @@ impl DataPlaneHandler {
     async fn record_l4_audit(
         &self,
         session: &AuthenticatedSession,
+        platform_id: &str,
         meta: &ConnectMeta,
         decision: &str,
         deny_reason: Option<String>,
@@ -564,6 +656,7 @@ impl DataPlaneHandler {
                 user_email: session.claims.email.clone(),
                 session_id: session.claims.sid.clone(),
                 profile_name: session.profile.name.clone(),
+                platform_id: platform_id.to_string(),
                 route_tier: "server_tunnel".into(),
                 target_host: meta.host.clone(),
                 target_port: meta.port,

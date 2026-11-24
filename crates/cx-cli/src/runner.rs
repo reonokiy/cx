@@ -312,7 +312,7 @@ fn build_child_env(
         env.insert(k.clone(), v.clone());
     }
 
-    // Declarative git HTTPS rewrite + virtual credential helper via GIT_CONFIG_COUNT
+    // Declarative git HTTPS rewrite + host-indexed virtual credential helper via GIT_CONFIG_COUNT
     if !git_rewrites.is_empty() {
         let mut count: usize = env
             .get("GIT_CONFIG_COUNT")
@@ -323,6 +323,7 @@ fn build_child_env(
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "cx".into());
 
+        let mut git_cred_map = BTreeMap::new();
         for rule in git_rewrites {
             for from_prefix in &rule.from {
                 env.insert(
@@ -342,8 +343,16 @@ fn build_child_env(
             );
             count += 1;
 
-            env.insert("CX_GIT_CRED_USER".into(), rule.credential_username.clone());
-            env.insert("CX_GIT_CRED_VKEY".into(), rule.virtual_key.clone());
+            git_cred_map.insert(
+                rule.host.to_ascii_lowercase(),
+                serde_json::json!({
+                    "user": rule.credential_username,
+                    "vkey": rule.virtual_key,
+                }),
+            );
+        }
+        if let Ok(serialized) = serde_json::to_string(&git_cred_map) {
+            env.insert("CX_GIT_CRED_MAP".into(), serialized);
         }
         env.insert("GIT_CONFIG_COUNT".into(), count.to_string());
     }

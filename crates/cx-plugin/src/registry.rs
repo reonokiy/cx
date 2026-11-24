@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use cx_crypto::{VirtualKeySpec, VirtualKeySpecError};
-use cx_protocol::{ClientLaunchSpec, DefaultRouteAction, GitRewriteRule, RoutingPolicy};
+use cx_protocol::{
+    ClientLaunchSpec, DefaultRouteAction, GitRewriteRule, RoutingPolicy, host_matches_pattern,
+};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::info;
 
@@ -17,7 +20,12 @@ use crate::manifest::{
     InjectRuleConfig, PolicyRuleConfig, ProviderManifest, render_client_template, render_params,
 };
 use crate::policy::{CompiledPolicy, PolicyCompileError};
-use crate::validator::{HostPatternValidator, ValidationError, pattern_is_subset_of};
+use crate::validator::{
+    HostPatternValidator, ValidationError, pattern_is_subset_of, patterns_overlap,
+};
+
+/// Built-in fallback HTTP provider that may be attached multiple times per profile with distinct IDs.
+pub const GENERIC_HTTP_PROVIDER_ID: &str = "generic-http";
 
 #[derive(Debug, Error)]
 pub enum PluginError {
@@ -25,8 +33,34 @@ pub enum PluginError {
     Io(#[from] std::io::Error),
     #[error("manifest parse error in {0}: {1}")]
     Toml(String, String),
+    #[error("invalid identifier '{0}': must be 1..=64 chars of [a-z0-9._-], starting with [a-z0-9]")]
+    InvalidIdentifier(String),
     #[error("provider '{0}' not found")]
     NotFound(String),
+    #[error("duplicate platform id '{0}' in profile")]
+    DuplicatePlatformId(String),
+    #[error("provider '{0}' can only be attached once per profile (only '{GENERIC_HTTP_PROVIDER_ID}' supports multiple entries)")]
+    DuplicateNamedProvider(String),
+    #[error("named provider '{0}' must use platform id '{0}' (got '{1}')")]
+    NamedProviderIdMismatch(String, String),
+    #[error("inject host '{host}' conflicts between platforms '{first_platform}' and '{second_platform}'")]
+    HostConflict {
+        host: String,
+        first_platform: String,
+        second_platform: String,
+    },
+    #[error("environment variable '{env_var}' conflicts between platforms '{first_platform}' and '{second_platform}'")]
+    EnvConflict {
+        env_var: String,
+        first_platform: String,
+        second_platform: String,
+    },
+    #[error("git host '{host}' conflicts between platforms '{first_platform}' and '{second_platform}'")]
+    GitHostConflict {
+        host: String,
+        first_platform: String,
+        second_platform: String,
+    },
     #[error("provider '{0}' missing required parameter '{1}'")]
     MissingParam(String, String),
     #[error("provider '{0}' unknown policy preset '{1}'")]
@@ -41,7 +75,24 @@ pub enum PluginError {
     Policy(#[from] PolicyCompileError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub fn validate_identifier(value: &str) -> Result<(), PluginError> {
+    if value.is_empty() || value.len() > 64 {
+        return Err(PluginError::InvalidIdentifier(value.into()));
+    }
+    let bytes = value.as_bytes();
+    if !(bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit()) {
+        return Err(PluginError::InvalidIdentifier(value.into()));
+    }
+    if !bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(PluginError::InvalidIdentifier(value.into()));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretScope {
     #[default]
@@ -49,8 +100,8 @@ pub enum SecretScope {
     Personal,
 }
 
-/// Strongly-typed secret source binding configured under `[secrets.<field>]`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Strongly-typed secret source binding configured per secret slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum SecretBinding {
     /// Read directly from a server environment variable.
@@ -60,7 +111,7 @@ pub enum SecretBinding {
         #[serde(default)]
         scope: SecretScope,
         name: String,
-        /// Optional field key inside the stored secret object (defaults to the `[secrets.<field>]` name).
+        /// Optional field key inside the stored secret object (defaults to the slot name).
         #[serde(default)]
         field: Option<String>,
     },
@@ -68,70 +119,172 @@ pub enum SecretBinding {
     Inline { value: String },
 }
 
-#[derive(Debug, Clone)]
-pub struct ProfileSpec {
-    pub name: String,
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlatformRoutingOverride {
+    #[serde(default)]
+    pub inject_hosts: Option<Vec<String>>,
+    #[serde(default)]
+    pub passthrough_hosts: Option<Vec<String>>,
+    #[serde(default)]
+    pub passthrough_ports: Option<Vec<u16>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformSpec {
+    /// Unique platform binding ID within the profile.
+    /// Non-`generic-http` providers must use `id == provider_id`.
+    /// `generic-http` allows custom IDs (e.g., `internal-api`, `jira`) for multiple entries.
+    pub id: String,
     pub provider_id: String,
+    #[serde(default)]
     pub params: BTreeMap<String, String>,
-    /// Secret field name -> structured binding (`[secrets.<field>]`).
+    /// Secret slot -> structured binding.
+    #[serde(default)]
     pub secrets: BTreeMap<String, SecretBinding>,
-    /// Optional profile-level override for virtual key generation rules.
+    #[serde(default)]
     pub virtual_key_override: Option<VirtualKeySpec>,
+    #[serde(default)]
     pub preset: Option<String>,
+    #[serde(default)]
     pub rules: Vec<PolicyRuleConfig>,
-    pub override_inject_hosts: Option<Vec<String>>,
-    pub override_passthrough_hosts: Option<Vec<String>>,
-    pub override_passthrough_ports: Option<Vec<u16>>,
-    pub deny_hosts: Vec<String>,
-    pub fallback: Option<DefaultRouteAction>,
-    pub allowed_groups: Vec<String>,
-    pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub routing: PlatformRoutingOverride,
+    #[serde(default)]
     pub allow_insecure_http: bool,
 }
 
-pub struct ResolvedProfile {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileSpec {
     pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub allowed_groups: Vec<String>,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub deny_hosts: Vec<String>,
+    #[serde(default)]
+    pub fallback: DefaultRouteAction,
+    #[serde(default)]
+    pub platforms: Vec<PlatformSpec>,
+}
+
+pub struct ResolvedPlatform {
+    pub id: String,
     pub provider_id: String,
+    pub provider_name: String,
+    pub provider_icon: Option<String>,
     pub resolved_params: BTreeMap<String, String>,
     pub secret_bindings: BTreeMap<String, SecretBinding>,
+    pub secret_fields: Vec<String>,
     pub virtual_key: VirtualKeySpec,
-    pub routing: RoutingPolicy,
+    pub inject_hosts: Vec<String>,
+    pub server_tunnel_hosts: Vec<String>,
+    pub server_tunnel_ports: Vec<u16>,
+    pub server_http_passthrough_hosts: Vec<String>,
     pub env_template: BTreeMap<String, String>,
     pub git_template: Vec<(String, Vec<String>, String)>,
     pub injectors: Vec<Arc<dyn AuthInjector>>,
     pub policy: CompiledPolicy,
+    pub preset: Option<String>,
+    pub preset_rules: Vec<PolicyRuleConfig>,
+    pub custom_rules: Vec<PolicyRuleConfig>,
+}
+
+impl ResolvedPlatform {
+    pub fn matches_inject_host(&self, host: &str) -> bool {
+        let host_lc = host.trim_end_matches('.').to_ascii_lowercase();
+        self.inject_hosts
+            .iter()
+            .any(|p| host_matches_pattern(&host_lc, p))
+    }
+
+    pub fn matches_tunnel_host(&self, host: &str, port: u16) -> bool {
+        let host_lc = host.trim_end_matches('.').to_ascii_lowercase();
+        let port_ok =
+            self.server_tunnel_ports.is_empty() || self.server_tunnel_ports.contains(&port);
+        port_ok
+            && self
+                .server_tunnel_hosts
+                .iter()
+                .any(|p| host_matches_pattern(&host_lc, p))
+    }
+
+    pub fn matches_http_passthrough_host(&self, host: &str) -> bool {
+        let host_lc = host.trim_end_matches('.').to_ascii_lowercase();
+        self.server_http_passthrough_hosts
+            .iter()
+            .any(|p| host_matches_pattern(&host_lc, p))
+    }
+}
+
+pub struct ResolvedProfile {
+    pub name: String,
+    pub description: String,
+    pub platforms: BTreeMap<String, ResolvedPlatform>,
+    pub routing: RoutingPolicy,
     pub allowed_groups: Vec<String>,
     pub allowed_users: Vec<String>,
 }
 
 impl ResolvedProfile {
-    pub fn generate_virtual_key(&self) -> String {
-        self.virtual_key.generate()
+    /// Generate a fresh per-platform ephemeral virtual key for a new QUIC session.
+    pub fn generate_ephemeral_virtual_keys(&self) -> BTreeMap<String, String> {
+        self.platforms
+            .iter()
+            .map(|(id, p)| (id.clone(), p.virtual_key.generate()))
+            .collect()
     }
 
-    pub fn build_client_launch_spec(&self, virtual_key: &str) -> ClientLaunchSpec {
+    /// Merge all attached platforms' client launch instructions using each platform's virtual key.
+    pub fn build_client_launch_spec(
+        &self,
+        virtual_keys: &BTreeMap<String, String>,
+    ) -> ClientLaunchSpec {
         let mut env_inject = BTreeMap::new();
-        for (raw_k, raw_v) in &self.env_template {
-            let k = render_params(raw_k, &self.resolved_params);
-            let v = render_client_template(raw_v, &self.resolved_params, virtual_key);
-            env_inject.insert(k, v);
-        }
+        let mut git_rewrites = Vec::new();
 
-        let git_rewrites = self
-            .git_template
-            .iter()
-            .map(|(host, from, user)| GitRewriteRule {
-                host: host.clone(),
-                from: from.clone(),
-                credential_username: user.clone(),
-                virtual_key: virtual_key.to_string(),
-            })
-            .collect();
+        for (id, platform) in &self.platforms {
+            let Some(vk) = virtual_keys.get(id) else {
+                continue;
+            };
+            for (raw_k, raw_v) in &platform.env_template {
+                let k = render_params(raw_k, &platform.resolved_params);
+                let v = render_client_template(raw_v, &platform.resolved_params, vk);
+                env_inject.insert(k, v);
+            }
+            for (host, from, user) in &platform.git_template {
+                git_rewrites.push(GitRewriteRule {
+                    host: host.clone(),
+                    from: from.clone(),
+                    credential_username: user.clone(),
+                    virtual_key: vk.clone(),
+                });
+            }
+        }
 
         ClientLaunchSpec {
             env_inject,
             git_rewrites,
         }
+    }
+
+    pub fn find_platform_for_l7_host(&self, host: &str) -> Option<&ResolvedPlatform> {
+        self.platforms
+            .values()
+            .find(|p| p.matches_inject_host(host))
+            .or_else(|| {
+                self.platforms
+                    .values()
+                    .find(|p| p.matches_http_passthrough_host(host))
+            })
+    }
+
+    pub fn find_platform_for_l4_host(&self, host: &str, port: u16) -> Option<&ResolvedPlatform> {
+        self.platforms
+            .values()
+            .find(|p| p.matches_tunnel_host(host, port))
     }
 
     pub fn user_has_access(&self, user_id: &str, email: &str, groups: &[String]) -> bool {
@@ -152,6 +305,28 @@ impl ResolvedProfile {
             .iter()
             .any(|ug| self.allowed_groups.iter().any(|ag| ag == ug))
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderParamInfo {
+    pub name: String,
+    pub required: bool,
+    pub default: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<String>,
+    pub version: String,
+    pub description: String,
+    pub allow_multiple: bool,
+    pub params: Vec<ProviderParamInfo>,
+    pub secret_fields: Vec<String>,
+    pub default_inject_hosts: Vec<String>,
+    pub default_passthrough_hosts: Vec<String>,
+    pub presets: BTreeMap<String, Vec<PolicyRuleConfig>>,
 }
 
 #[derive(Default)]
@@ -198,6 +373,65 @@ impl ProviderRegistry {
             .collect()
     }
 
+    pub fn list_provider_catalog(&self) -> Vec<ProviderCatalogEntry> {
+        let guard = self.catalog.load();
+        guard
+            .manifests
+            .values()
+            .map(|m| {
+                let mut defaults = BTreeMap::new();
+                let params = m
+                    .params
+                    .iter()
+                    .map(|(name, spec)| {
+                        if let Some(d) = spec.default_value() {
+                            defaults.insert(name.clone(), d.to_string());
+                        }
+                        ProviderParamInfo {
+                            name: name.clone(),
+                            required: spec.is_required(),
+                            default: spec.default_value().map(str::to_string),
+                        }
+                    })
+                    .collect();
+
+                let mut secret_fields = Vec::new();
+                let mut default_inject_hosts = Vec::new();
+                for inj in &m.inject {
+                    if !inj.secret.is_empty() && !secret_fields.contains(&inj.secret) {
+                        secret_fields.push(inj.secret.clone());
+                    }
+                    for h in &inj.hosts {
+                        let rendered = render_params(h, &defaults);
+                        if !default_inject_hosts.contains(&rendered) {
+                            default_inject_hosts.push(rendered);
+                        }
+                    }
+                }
+                let default_passthrough_hosts = m
+                    .passthrough
+                    .hosts
+                    .iter()
+                    .map(|h| render_params(h, &defaults))
+                    .collect();
+
+                ProviderCatalogEntry {
+                    id: m.id.clone(),
+                    name: m.display_name().to_string(),
+                    icon: m.icon.clone(),
+                    version: m.version.clone(),
+                    description: m.description.clone(),
+                    allow_multiple: m.id == GENERIC_HTTP_PROVIDER_ID,
+                    params,
+                    secret_fields,
+                    default_inject_hosts,
+                    default_passthrough_hosts,
+                    presets: m.presets.clone(),
+                }
+            })
+            .collect()
+    }
+
     pub fn validate_manifest_file(
         path: &Path,
         validator: &HostPatternValidator,
@@ -233,24 +467,151 @@ impl ProviderRegistry {
     }
 
     pub fn resolve_profile(&self, spec: &ProfileSpec) -> Result<ResolvedProfile, PluginError> {
+        validate_identifier(&spec.name)?;
         let catalog = self.catalog.load();
-        let manifest = catalog
-            .manifests
-            .get(&spec.provider_id)
-            .ok_or_else(|| PluginError::NotFound(spec.provider_id.clone()))?;
 
-        // 1. Validate virtual key generation spec (profile override > provider default)
+        let mut platforms: BTreeMap<String, ResolvedPlatform> = BTreeMap::new();
+        let mut seen_named_providers: BTreeSet<String> = BTreeSet::new();
+
+        // Cross-platform collision tracking
+        let mut claimed_inject_hosts: Vec<(String, String)> = Vec::new(); // (host_pattern, platform_id)
+        let mut claimed_env_vars: BTreeMap<String, String> = BTreeMap::new(); // env_var -> platform_id
+        let mut claimed_git_hosts: BTreeMap<String, String> = BTreeMap::new(); // git_host -> platform_id
+
+        // Aggregated 3-tier routing across all platforms
+        let mut agg_inject_hosts = Vec::new();
+        let mut seen_inject = BTreeSet::new();
+        let mut agg_tunnel_hosts = Vec::new();
+        let mut seen_tunnel = BTreeSet::new();
+        let mut agg_tunnel_ports = BTreeSet::new();
+        let mut agg_http_passthrough_hosts = Vec::new();
+        let mut seen_http_passthrough = BTreeSet::new();
+
+        for pspec in &spec.platforms {
+            validate_identifier(&pspec.id)?;
+            if platforms.contains_key(&pspec.id) {
+                return Err(PluginError::DuplicatePlatformId(pspec.id.clone()));
+            }
+            if pspec.provider_id != GENERIC_HTTP_PROVIDER_ID {
+                if pspec.id != pspec.provider_id {
+                    return Err(PluginError::NamedProviderIdMismatch(
+                        pspec.provider_id.clone(),
+                        pspec.id.clone(),
+                    ));
+                }
+                if !seen_named_providers.insert(pspec.provider_id.clone()) {
+                    return Err(PluginError::DuplicateNamedProvider(
+                        pspec.provider_id.clone(),
+                    ));
+                }
+            }
+
+            let manifest = catalog
+                .manifests
+                .get(&pspec.provider_id)
+                .ok_or_else(|| PluginError::NotFound(pspec.provider_id.clone()))?;
+
+            let resolved = self.resolve_platform(pspec, manifest)?;
+
+            // Check cross-platform inject host overlap
+            for h in &resolved.inject_hosts {
+                for (existing_h, existing_platform) in &claimed_inject_hosts {
+                    if patterns_overlap(h, existing_h) {
+                        return Err(PluginError::HostConflict {
+                            host: h.clone(),
+                            first_platform: existing_platform.clone(),
+                            second_platform: resolved.id.clone(),
+                        });
+                    }
+                }
+                claimed_inject_hosts.push((h.clone(), resolved.id.clone()));
+                if seen_inject.insert(h.clone()) {
+                    agg_inject_hosts.push(h.clone());
+                }
+            }
+
+            // Check cross-platform env var collision
+            for raw_k in resolved.env_template.keys() {
+                let rendered_k = render_params(raw_k, &resolved.resolved_params);
+                if let Some(first_platform) =
+                    claimed_env_vars.insert(rendered_k.clone(), resolved.id.clone())
+                {
+                    return Err(PluginError::EnvConflict {
+                        env_var: rendered_k,
+                        first_platform,
+                        second_platform: resolved.id.clone(),
+                    });
+                }
+            }
+
+            // Check cross-platform git rewrite host collision
+            for (git_host, _, _) in &resolved.git_template {
+                let lc = git_host.to_ascii_lowercase();
+                if let Some(first_platform) = claimed_git_hosts.insert(lc, resolved.id.clone()) {
+                    return Err(PluginError::GitHostConflict {
+                        host: git_host.clone(),
+                        first_platform,
+                        second_platform: resolved.id.clone(),
+                    });
+                }
+            }
+
+            for h in &resolved.server_tunnel_hosts {
+                if seen_tunnel.insert(h.clone()) {
+                    agg_tunnel_hosts.push(h.clone());
+                }
+            }
+            for port in &resolved.server_tunnel_ports {
+                agg_tunnel_ports.insert(*port);
+            }
+            for h in &resolved.server_http_passthrough_hosts {
+                if seen_http_passthrough.insert(h.clone()) {
+                    agg_http_passthrough_hosts.push(h.clone());
+                }
+            }
+
+            platforms.insert(resolved.id.clone(), resolved);
+        }
+
+        let mut deny_hosts = Vec::with_capacity(spec.deny_hosts.len());
+        for raw in &spec.deny_hosts {
+            deny_hosts.push(self.validator.validate_tunnel_host(raw)?);
+        }
+
+        let routing = RoutingPolicy {
+            deny_hosts,
+            inject_hosts: agg_inject_hosts,
+            server_tunnel_hosts: agg_tunnel_hosts,
+            server_tunnel_ports: agg_tunnel_ports.into_iter().collect(),
+            server_http_passthrough_hosts: agg_http_passthrough_hosts,
+            default_action: spec.fallback,
+        };
+
+        Ok(ResolvedProfile {
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+            platforms,
+            routing,
+            allowed_groups: spec.allowed_groups.clone(),
+            allowed_users: spec.allowed_users.clone(),
+        })
+    }
+
+    fn resolve_platform(
+        &self,
+        spec: &PlatformSpec,
+        manifest: &ProviderManifest,
+    ) -> Result<ResolvedPlatform, PluginError> {
         let virtual_key = spec
             .virtual_key_override
             .clone()
             .unwrap_or_else(|| manifest.virtual_key.clone());
         virtual_key.validate()?;
 
-        // 2. Resolve parameters (profile override > provider default)
         let mut resolved_params = BTreeMap::new();
         for (k, def) in &manifest.params {
-            if let Some(v) = spec.params.get(k) {
-                resolved_params.insert(k.clone(), v.clone());
+            if let Some(v) = spec.params.get(k).filter(|v| !v.trim().is_empty()) {
+                resolved_params.insert(k.clone(), v.trim().to_string());
             } else if let Some(d) = def.default_value() {
                 resolved_params.insert(k.clone(), d.to_string());
             } else if def.is_required() {
@@ -261,13 +622,20 @@ impl ProviderRegistry {
             }
         }
         for (k, v) in &spec.params {
-            resolved_params.entry(k.clone()).or_insert_with(|| v.clone());
+            if !v.trim().is_empty() {
+                resolved_params
+                    .entry(k.clone())
+                    .or_insert_with(|| v.trim().to_string());
+            }
         }
 
-        // 3. Automatically aggregate & validate Tier 1 inject hosts from `[[inject]]` rules (single source of truth!)
         let mut seen_inject = BTreeSet::new();
         let mut provider_inject_hosts = Vec::new();
+        let mut secret_fields = Vec::new();
         for inj in &manifest.inject {
+            if !inj.secret.is_empty() && !secret_fields.contains(&inj.secret) {
+                secret_fields.push(inj.secret.clone());
+            }
             for h in &inj.hosts {
                 let validated = self
                     .validator
@@ -278,7 +646,6 @@ impl ProviderRegistry {
             }
         }
 
-        // 4. Validate Tier 2 passthrough hosts
         let provider_tunnel_hosts: Vec<String> = manifest
             .passthrough
             .hosts
@@ -289,8 +656,7 @@ impl ProviderRegistry {
             })
             .collect::<Result<_, _>>()?;
 
-        // 5. Apply Profile narrowing (Profile cannot expand inject hosts beyond provider!)
-        let inject_hosts = match &spec.override_inject_hosts {
+        let inject_hosts = match &spec.routing.inject_hosts {
             Some(custom) => {
                 let mut narrowed = Vec::with_capacity(custom.len());
                 for h in custom {
@@ -305,7 +671,7 @@ impl ProviderRegistry {
             None => provider_inject_hosts,
         };
 
-        let server_tunnel_hosts = match &spec.override_passthrough_hosts {
+        let server_tunnel_hosts = match &spec.routing.passthrough_hosts {
             Some(custom) => custom
                 .iter()
                 .map(|h| self.validator.validate_tunnel_host(h))
@@ -314,7 +680,8 @@ impl ProviderRegistry {
         };
 
         let server_tunnel_ports = spec
-            .override_passthrough_ports
+            .routing
+            .passthrough_ports
             .clone()
             .unwrap_or_else(|| manifest.passthrough.ports.clone());
 
@@ -327,19 +694,6 @@ impl ProviderRegistry {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let routing = RoutingPolicy {
-            deny_hosts: spec.deny_hosts.clone(),
-            inject_hosts: inject_hosts.clone(),
-            server_tunnel_hosts,
-            server_tunnel_ports,
-            server_http_passthrough_hosts,
-            default_action: spec.fallback.unwrap_or(manifest.fallback),
-        };
-
-        // 6. Store strongly-typed `[secrets.*]` bindings
-        let secret_bindings = spec.secrets.clone();
-
-        // 7. Build slot-scoped injectors constrained strictly to resolved `inject_hosts`
         let mut injectors: Vec<Arc<dyn AuthInjector>> = Vec::new();
         for (idx, inj_cfg) in manifest.inject.iter().enumerate() {
             let injector = build_injector(
@@ -354,22 +708,23 @@ impl ProviderRegistry {
             }
         }
 
-        // 8. Compile structured policy rules (preset + profile extra rules)
-        let mut compiled_rule_cfgs = Vec::new();
+        let mut preset_rules = Vec::new();
         if let Some(preset_name) = &spec.preset {
-            let preset_rules = manifest
-                .presets
-                .get(preset_name)
-                .ok_or_else(|| {
-                    PluginError::UnknownPreset(spec.provider_id.clone(), preset_name.clone())
-                })?;
-            for r in preset_rules {
-                compiled_rule_cfgs.push(render_policy_rule(r, &resolved_params));
+            let raw_rules = manifest.presets.get(preset_name).ok_or_else(|| {
+                PluginError::UnknownPreset(spec.provider_id.clone(), preset_name.clone())
+            })?;
+            for r in raw_rules {
+                preset_rules.push(render_policy_rule(r, &resolved_params));
             }
         }
-        for r in &spec.rules {
-            compiled_rule_cfgs.push(render_policy_rule(r, &resolved_params));
-        }
+        let custom_rules: Vec<PolicyRuleConfig> = spec
+            .rules
+            .iter()
+            .map(|r| render_policy_rule(r, &resolved_params))
+            .collect();
+
+        let mut compiled_rule_cfgs = preset_rules.clone();
+        compiled_rule_cfgs.extend(custom_rules.iter().cloned());
         let policy = CompiledPolicy::compile(&compiled_rule_cfgs)?;
 
         let git_template = manifest
@@ -387,19 +742,26 @@ impl ProviderRegistry {
             })
             .collect();
 
-        Ok(ResolvedProfile {
-            name: spec.name.clone(),
+        Ok(ResolvedPlatform {
+            id: spec.id.clone(),
             provider_id: manifest.id.clone(),
+            provider_name: manifest.display_name().to_string(),
+            provider_icon: manifest.icon.clone(),
             resolved_params,
-            secret_bindings,
+            secret_bindings: spec.secrets.clone(),
+            secret_fields,
             virtual_key,
-            routing,
+            inject_hosts,
+            server_tunnel_hosts,
+            server_tunnel_ports,
+            server_http_passthrough_hosts,
             env_template: manifest.env.clone(),
             git_template,
             injectors,
             policy,
-            allowed_groups: spec.allowed_groups.clone(),
-            allowed_users: spec.allowed_users.clone(),
+            preset: spec.preset.clone(),
+            preset_rules,
+            custom_rules,
         })
     }
 
@@ -438,10 +800,39 @@ impl ProviderRegistry {
     }
 }
 
+fn sanitize_icon(source: &str, raw: Option<&str>) -> Result<Option<String>, PluginError> {
+    let Some(val) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let lower = val.to_ascii_lowercase();
+    if lower.starts_with("data:") {
+        const MAX_DATA_URI_LEN: usize = 65_536;
+        let allowed_prefix = lower.starts_with("data:image/png;base64,")
+            || lower.starts_with("data:image/webp;base64,")
+            || lower.starts_with("data:image/jpeg;base64,")
+            || lower.starts_with("data:image/svg+xml;base64,");
+        if !allowed_prefix || val.len() > MAX_DATA_URI_LEN {
+            return Err(PluginError::Toml(
+                source.into(),
+                "icon data URI must be base64 png/webp/jpeg/svg+xml and <= 64 KiB".into(),
+            ));
+        }
+        return Ok(Some(val.to_string()));
+    }
+    if lower.contains("://") || lower.starts_with("javascript:") || val.len() > 64 {
+        return Err(PluginError::Toml(
+            source.into(),
+            "icon must be a short icon name, emoji, or base64 data:image/* URI".into(),
+        ));
+    }
+    Ok(Some(val.to_string()))
+}
+
 fn parse_manifest(source: &str, raw: &str) -> Result<ProviderManifest, PluginError> {
-    let manifest: ProviderManifest =
+    let mut manifest: ProviderManifest =
         toml::from_str(raw).map_err(|e| PluginError::Toml(source.into(), e.to_string()))?;
     manifest.virtual_key.validate()?;
+    manifest.icon = sanitize_icon(source, manifest.icon.as_deref())?;
     Ok(manifest)
 }
 
@@ -553,64 +944,259 @@ mod tests {
     use secrecy::SecretString;
 
     #[tokio::test]
-    async fn github_provider_resolves_and_injects_only_allowed_host() {
+    async fn multi_platform_profile_isolates_virtual_keys_and_policies() {
         let reg = ProviderRegistry::new(None, true, HostPatternValidator::default()).unwrap();
         let profile = reg
             .resolve_profile(&ProfileSpec {
-                name: "github-ro".into(),
-                provider_id: "github".into(),
-                params: BTreeMap::new(),
-                secrets: BTreeMap::from([(
-                    "token".into(),
-                    SecretBinding::Env {
-                        var: "REAL_GITHUB_TOKEN".into(),
-                    },
-                )]),
-                virtual_key_override: None,
-                preset: Some("readonly".into()),
-                rules: vec![],
-                override_inject_hosts: Some(vec!["api.github.com".into()]),
-                override_passthrough_hosts: None,
-                override_passthrough_ports: None,
-                deny_hosts: vec![],
-                fallback: None,
+                name: "dev-agent".into(),
+                description: "GitHub RO + OpenAI + two internal HTTP APIs".into(),
                 allowed_groups: vec!["eng".into()],
                 allowed_users: vec![],
-                allow_insecure_http: false,
+                deny_hosts: vec![],
+                fallback: DefaultRouteAction::ClientPassthrough,
+                platforms: vec![
+                    PlatformSpec {
+                        id: "github".into(),
+                        provider_id: "github".into(),
+                        params: BTreeMap::new(),
+                        secrets: BTreeMap::from([(
+                            "token".into(),
+                            SecretBinding::Env {
+                                var: "REAL_GITHUB_TOKEN".into(),
+                            },
+                        )]),
+                        virtual_key_override: None,
+                        preset: Some("readonly".into()),
+                        rules: vec![],
+                        routing: PlatformRoutingOverride {
+                            inject_hosts: Some(vec!["api.github.com".into()]),
+                            ..Default::default()
+                        },
+                        allow_insecure_http: false,
+                    },
+                    PlatformSpec {
+                        id: "openai".into(),
+                        provider_id: "openai".into(),
+                        params: BTreeMap::new(),
+                        secrets: BTreeMap::from([(
+                            "api_key".into(),
+                            SecretBinding::Env {
+                                var: "REAL_OPENAI_KEY".into(),
+                            },
+                        )]),
+                        virtual_key_override: None,
+                        preset: Some("full".into()),
+                        rules: vec![],
+                        routing: PlatformRoutingOverride::default(),
+                        allow_insecure_http: false,
+                    },
+                    PlatformSpec {
+                        id: "jira".into(),
+                        provider_id: "generic-http".into(),
+                        params: BTreeMap::from([
+                            ("host".into(), "jira.example.com".into()),
+                            ("env_var".into(), "JIRA_TOKEN".into()),
+                        ]),
+                        secrets: BTreeMap::new(),
+                        virtual_key_override: None,
+                        preset: Some("full".into()),
+                        rules: vec![],
+                        routing: PlatformRoutingOverride::default(),
+                        allow_insecure_http: false,
+                    },
+                    PlatformSpec {
+                        id: "billing".into(),
+                        provider_id: "generic-http".into(),
+                        params: BTreeMap::from([
+                            ("host".into(), "billing.example.com".into()),
+                            ("env_var".into(), "BILLING_TOKEN".into()),
+                        ]),
+                        secrets: BTreeMap::new(),
+                        virtual_key_override: None,
+                        preset: Some("full".into()),
+                        rules: vec![],
+                        routing: PlatformRoutingOverride::default(),
+                        allow_insecure_http: false,
+                    },
+                ],
             })
             .unwrap();
 
-        // Narrowing worked: github.com injector was excluded
-        assert_eq!(profile.routing.inject_hosts, vec!["api.github.com"]);
-        assert_eq!(profile.injectors.len(), 1);
+        assert_eq!(profile.platforms.len(), 4);
+        assert_eq!(
+            profile.routing.inject_hosts,
+            vec![
+                "api.github.com",
+                "api.openai.com",
+                "jira.example.com",
+                "billing.example.com"
+            ]
+        );
 
-        let vk = profile.generate_virtual_key();
-        assert!(vk.starts_with("gho_cx_"));
-        assert_eq!(vk.len(), "gho_cx_".len() + 32);
+        let vks = profile.generate_ephemeral_virtual_keys();
+        assert!(vks["github"].starts_with("gho_cx_"));
+        assert!(vks["openai"].starts_with("sk-cx-"));
+        assert!(vks["jira"].starts_with("cx_vk_"));
+        assert!(vks["billing"].starts_with("cx_vk_"));
 
-        let vk_hashes = vec![hash_secret_hex(&vk)];
+        let launch = profile.build_client_launch_spec(&vks);
+        assert_eq!(launch.env_inject["GH_TOKEN"], vks["github"]);
+        assert_eq!(launch.env_inject["OPENAI_API_KEY"], vks["openai"]);
+        assert_eq!(launch.env_inject["JIRA_TOKEN"], vks["jira"]);
+        assert_eq!(launch.env_inject["BILLING_TOKEN"], vks["billing"]);
+
+        // GitHub platform only accepts GitHub virtual key and enforces readonly policy
+        let gh = profile.find_platform_for_l7_host("api.github.com").unwrap();
+        assert_eq!(gh.id, "github");
+        let gh_hashes = vec![hash_secret_hex(&vks["github"])];
         let ctx = InjectionContext {
-            allowed_vk_hashes: &vk_hashes,
+            allowed_vk_hashes: &gh_hashes,
         };
-        let mut secrets = BTreeMap::new();
-        secrets.insert("token".into(), SecretString::from("ghp_REAL_TOKEN".to_string()));
-
+        let secrets = BTreeMap::from([(
+            "token".into(),
+            SecretString::from("ghp_REAL_TOKEN".to_string()),
+        )]);
         let mut req = UpstreamHttpRequest {
             method: "GET".into(),
             scheme: "https".into(),
             host: "api.github.com".into(),
             port: 443,
             path_and_query: "/user".into(),
-            headers: vec![("Authorization".into(), format!("token {vk}").into_bytes())],
+            headers: vec![("Authorization".into(), format!("token {}", vks["github"]).into_bytes())],
         };
-
-        let inj = &profile.injectors[0];
-        assert!(inj.matches_target("api.github.com", "https"));
-        assert!(!inj.matches_target("evil.com", "https"));
-
-        let outcome = inj.inject(&mut req, &ctx, &secrets).await.unwrap();
+        let outcome = gh.injectors[0].inject(&mut req, &ctx, &secrets).await.unwrap();
         assert_eq!(outcome, InjectionOutcome::Injected);
         assert_eq!(req.headers[0].1, b"Bearer ghp_REAL_TOKEN");
+
+        // OpenAI virtual key is rejected by GitHub injector!
+        let mut wrong_vk_req = UpstreamHttpRequest {
+            method: "GET".into(),
+            scheme: "https".into(),
+            host: "api.github.com".into(),
+            port: 443,
+            path_and_query: "/user".into(),
+            headers: vec![("Authorization".into(), format!("Bearer {}", vks["openai"]).into_bytes())],
+        };
+        assert!(gh.injectors[0].inject(&mut wrong_vk_req, &ctx, &secrets).await.is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_named_provider_and_env_or_host_conflicts() {
+        let reg = ProviderRegistry::new(None, true, HostPatternValidator::default()).unwrap();
+
+        // Duplicate named provider (github twice) rejected
+        let dup_named = reg.resolve_profile(&ProfileSpec {
+            name: "dup".into(),
+            description: String::new(),
+            allowed_groups: vec!["eng".into()],
+            allowed_users: vec![],
+            deny_hosts: vec![],
+            fallback: DefaultRouteAction::ClientPassthrough,
+            platforms: vec![
+                PlatformSpec {
+                    id: "github".into(),
+                    provider_id: "github".into(),
+                    params: BTreeMap::new(),
+                    secrets: BTreeMap::new(),
+                    virtual_key_override: None,
+                    preset: None,
+                    rules: vec![],
+                    routing: PlatformRoutingOverride::default(),
+                    allow_insecure_http: false,
+                },
+                PlatformSpec {
+                    id: "github-2".into(),
+                    provider_id: "github".into(),
+                    params: BTreeMap::new(),
+                    secrets: BTreeMap::new(),
+                    virtual_key_override: None,
+                    preset: None,
+                    rules: vec![],
+                    routing: PlatformRoutingOverride::default(),
+                    allow_insecure_http: false,
+                },
+            ],
+        });
+        assert!(matches!(
+            dup_named,
+            Err(PluginError::NamedProviderIdMismatch(..))
+        ));
+
+        // Two generic-http entries sharing default env_var API_TOKEN rejected
+        let env_conflict = reg.resolve_profile(&ProfileSpec {
+            name: "env-clash".into(),
+            description: String::new(),
+            allowed_groups: vec!["eng".into()],
+            allowed_users: vec![],
+            deny_hosts: vec![],
+            fallback: DefaultRouteAction::ClientPassthrough,
+            platforms: vec![
+                PlatformSpec {
+                    id: "svc-a".into(),
+                    provider_id: "generic-http".into(),
+                    params: BTreeMap::from([("host".into(), "a.example.com".into())]),
+                    secrets: BTreeMap::new(),
+                    virtual_key_override: None,
+                    preset: None,
+                    rules: vec![],
+                    routing: PlatformRoutingOverride::default(),
+                    allow_insecure_http: false,
+                },
+                PlatformSpec {
+                    id: "svc-b".into(),
+                    provider_id: "generic-http".into(),
+                    params: BTreeMap::from([("host".into(), "b.example.com".into())]),
+                    secrets: BTreeMap::new(),
+                    virtual_key_override: None,
+                    preset: None,
+                    rules: vec![],
+                    routing: PlatformRoutingOverride::default(),
+                    allow_insecure_http: false,
+                },
+            ],
+        });
+        assert!(matches!(env_conflict, Err(PluginError::EnvConflict { .. })));
+
+        // Two generic-http entries claiming the same host rejected
+        let host_conflict = reg.resolve_profile(&ProfileSpec {
+            name: "host-clash".into(),
+            description: String::new(),
+            allowed_groups: vec!["eng".into()],
+            allowed_users: vec![],
+            deny_hosts: vec![],
+            fallback: DefaultRouteAction::ClientPassthrough,
+            platforms: vec![
+                PlatformSpec {
+                    id: "svc-a".into(),
+                    provider_id: "generic-http".into(),
+                    params: BTreeMap::from([
+                        ("host".into(), "api.example.com".into()),
+                        ("env_var".into(), "A_TOKEN".into()),
+                    ]),
+                    secrets: BTreeMap::new(),
+                    virtual_key_override: None,
+                    preset: None,
+                    rules: vec![],
+                    routing: PlatformRoutingOverride::default(),
+                    allow_insecure_http: false,
+                },
+                PlatformSpec {
+                    id: "svc-b".into(),
+                    provider_id: "generic-http".into(),
+                    params: BTreeMap::from([
+                        ("host".into(), "api.example.com".into()),
+                        ("env_var".into(), "B_TOKEN".into()),
+                    ]),
+                    secrets: BTreeMap::new(),
+                    virtual_key_override: None,
+                    preset: None,
+                    rules: vec![],
+                    routing: PlatformRoutingOverride::default(),
+                    allow_insecure_http: false,
+                },
+            ],
+        });
+        assert!(matches!(host_conflict, Err(PluginError::HostConflict { .. })));
     }
 
     #[test]
@@ -618,21 +1204,68 @@ mod tests {
         let reg = ProviderRegistry::new(None, true, HostPatternValidator::default()).unwrap();
         let res = reg.resolve_profile(&ProfileSpec {
             name: "bad".into(),
-            provider_id: "github".into(),
-            params: BTreeMap::new(),
-            secrets: BTreeMap::new(),
-            virtual_key_override: None,
-            preset: None,
-            rules: vec![],
-            override_inject_hosts: Some(vec!["evil.example.com".into()]),
-            override_passthrough_hosts: None,
-            override_passthrough_ports: None,
-            deny_hosts: vec![],
-            fallback: None,
+            description: String::new(),
             allowed_groups: vec!["eng".into()],
             allowed_users: vec![],
-            allow_insecure_http: false,
+            deny_hosts: vec![],
+            fallback: DefaultRouteAction::ClientPassthrough,
+            platforms: vec![PlatformSpec {
+                id: "github".into(),
+                provider_id: "github".into(),
+                params: BTreeMap::new(),
+                secrets: BTreeMap::new(),
+                virtual_key_override: None,
+                preset: None,
+                rules: vec![],
+                routing: PlatformRoutingOverride {
+                    inject_hosts: Some(vec!["evil.example.com".into()]),
+                    ..Default::default()
+                },
+                allow_insecure_http: false,
+            }],
         });
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn provider_catalog_exposes_display_name_and_validates_icons() {
+        let reg = ProviderRegistry::new(None, true, HostPatternValidator::default()).unwrap();
+        let catalog = reg.list_provider_catalog();
+
+        let gh = catalog.iter().find(|p| p.id == "github").unwrap();
+        assert_eq!(gh.name, "GitHub");
+        assert_eq!(gh.icon.as_deref(), Some("github"));
+
+        let oa = catalog.iter().find(|p| p.id == "openai").unwrap();
+        assert_eq!(oa.name, "OpenAI");
+        assert_eq!(oa.icon.as_deref(), Some("openai"));
+
+        let generic = catalog.iter().find(|p| p.id == "generic-http").unwrap();
+        assert_eq!(generic.name, "自定义 HTTP");
+        assert_eq!(generic.icon.as_deref(), Some("globe"));
+        assert!(generic.allow_multiple);
+
+        // Unsafe icon schemes must be rejected
+        let bad_js = r#"
+id = "evil"
+name = "Evil"
+icon = "javascript:alert(1)"
+"#;
+        assert!(parse_manifest("test", bad_js).is_err());
+
+        let bad_remote = r#"
+id = "remote"
+icon = "https://example.com/logo.png"
+"#;
+        assert!(parse_manifest("test", bad_remote).is_err());
+
+        // Safe base64 PNG data URI and fallback name -> id must succeed
+        let ok_data = r#"
+id = "corp-api"
+icon = "data:image/png;base64,iVBORw0KGgo="
+"#;
+        let parsed = parse_manifest("test", ok_data).unwrap();
+        assert_eq!(parsed.display_name(), "corp-api");
+        assert!(parsed.icon.as_deref().unwrap().starts_with("data:image/png;base64,"));
     }
 }

@@ -1,4 +1,6 @@
 id = "generic-http"
+name = "自定义 HTTP"
+icon = "globe"
 version = "1.0.0"
 description = "Parameterized generic HTTP header/bearer credential injector"
 

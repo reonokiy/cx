@@ -2,12 +2,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cx_crypto::VirtualKeySpec;
-use cx_plugin::{PolicyRuleConfig, ProfileSpec, SecretBinding};
-use cx_protocol::DefaultRouteAction;
 use serde::{Deserialize, Serialize};
 
 /// Clean infrastructure-focused server config (`server.toml`).
+/// Profiles and their attached platforms live in PostgreSQL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerFileConfig {
@@ -24,10 +22,6 @@ pub struct ServerFileConfig {
     /// Optional static bootstrap users (for local dev, CI, or initial admin setup).
     #[serde(default)]
     pub bootstrap_users: Vec<BootstrapUserConfig>,
-    /// Optional inline profiles (recommended for small single-file setups or tests;
-    /// for production, place one file per profile in `dirs.profiles`).
-    #[serde(default)]
-    pub profiles: Vec<ProfileFileConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +157,7 @@ impl PostgresConfig {
         self.password
             .clone()
             .or_else(|| std::env::var(&self.password_env).ok())
+            .filter(|s| !s.is_empty())
     }
 }
 
@@ -184,6 +179,7 @@ fn default_pg_password_env() -> String {
 fn default_pg_max_conns() -> u32 {
     16
 }
+
 fn default_master_key_env() -> String {
     "CX_MASTER_KEY".into()
 }
@@ -199,17 +195,16 @@ pub struct SecurityConfig {
     pub allow_private_targets: bool,
     #[serde(default = "default_session_ttl")]
     pub session_ttl_secs: u64,
-    /// Optional env var name holding a 32-byte base64 AES-256-GCM KEK.
-    /// Only required when using `[secrets.*] source = "db"` or `POST /v1/secrets`.
+    /// Optional env var holding a 32-byte base64 AES-256-GCM master key (KEK) for DB-encrypted secrets.
     #[serde(default = "default_master_key_env")]
     pub master_key_env: String,
     /// Optional inline base64 master key (intended for automated tests only).
     #[serde(default)]
     pub master_key_inline: Option<String>,
-    /// Optional host -> "ip:port" dial overrides (for automated tests).
+    /// Test-only: override upstream dial address for specific hosts (`host -> ip:port`).
     #[serde(default)]
     pub upstream_overrides: BTreeMap<String, String>,
-    /// Optional extra CA PEM trusted when dialing upstreams.
+    /// Test-only: extra root CA PEM trusted by upstream TLS client.
     #[serde(default)]
     pub extra_upstream_ca_pem: Option<String>,
 }
@@ -218,9 +213,9 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             block_private_ips: true,
-            allow_private_cidrs: vec![],
+            allow_private_cidrs: Vec::new(),
             allow_private_targets: false,
-            session_ttl_secs: 900,
+            session_ttl_secs: default_session_ttl(),
             master_key_env: default_master_key_env(),
             master_key_inline: None,
             upstream_overrides: BTreeMap::new(),
@@ -237,11 +232,10 @@ fn default_session_ttl() -> u64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DirsConfig {
     #[serde(default)]
     pub providers: Option<PathBuf>,
-    #[serde(default)]
-    pub profiles: Option<PathBuf>,
     #[serde(default = "default_true")]
     pub enable_builtin_providers: bool,
 }
@@ -250,7 +244,6 @@ impl Default for DirsConfig {
     fn default() -> Self {
         Self {
             providers: None,
-            profiles: None,
             enable_builtin_providers: true,
         }
     }
@@ -269,117 +262,18 @@ pub struct BootstrapUserConfig {
     pub token_env: Option<String>,
 }
 
-/// One profile per file in `profiles/<name>.toml` (or inline under `[[profiles]]`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileFileConfig {
-    pub name: String,
-    pub provider: String,
-    #[serde(default)]
-    pub params: BTreeMap<String, String>,
-    /// Strongly-typed secret source bindings configured under `[secrets.<field>]`.
-    #[serde(default)]
-    pub secrets: BTreeMap<String, SecretBinding>,
-    /// Optional profile-level override for `[virtual_key]` generation rules.
-    #[serde(default)]
-    pub virtual_key: Option<VirtualKeySpec>,
-    #[serde(default)]
-    pub allow: ProfileAllowConfig,
-    #[serde(default)]
-    pub routing: ProfileRoutingOverride,
-    #[serde(default)]
-    pub policy: ProfilePolicyConfig,
-    #[serde(default)]
-    pub allow_insecure_http: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProfilePolicyConfig {
-    #[serde(default)]
-    pub preset: Option<String>,
-    /// Structured L7 policy rules (`[[policy.rules]]`).
-    #[serde(default)]
-    pub rules: Vec<PolicyRuleConfig>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileAllowConfig {
-    #[serde(default)]
-    pub groups: Vec<String>,
-    #[serde(default)]
-    pub users: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileRoutingOverride {
-    #[serde(default)]
-    pub inject_hosts: Option<Vec<String>>,
-    #[serde(default)]
-    pub passthrough_hosts: Option<Vec<String>>,
-    #[serde(default)]
-    pub passthrough_ports: Option<Vec<u16>>,
-    #[serde(default)]
-    pub deny_hosts: Vec<String>,
-    #[serde(default)]
-    pub fallback: Option<DefaultRouteAction>,
-}
-
-impl ProfileFileConfig {
-    pub fn to_profile_spec(&self) -> ProfileSpec {
-        ProfileSpec {
-            name: self.name.clone(),
-            provider_id: self.provider.clone(),
-            params: self.params.clone(),
-            secrets: self.secrets.clone(),
-            virtual_key_override: self.virtual_key.clone(),
-            preset: self.policy.preset.clone(),
-            rules: self.policy.rules.clone(),
-            override_inject_hosts: self.routing.inject_hosts.clone(),
-            override_passthrough_hosts: self.routing.passthrough_hosts.clone(),
-            override_passthrough_ports: self.routing.passthrough_ports.clone(),
-            deny_hosts: self.routing.deny_hosts.clone(),
-            fallback: self.routing.fallback,
-            allowed_groups: self.allow.groups.clone(),
-            allowed_users: self.allow.users.clone(),
-            allow_insecure_http: self.allow_insecure_http,
-        }
-    }
-}
-
 impl ServerFileConfig {
     /// Load `server.toml`, resolving relative `dirs.*` / `quic.*` paths
-    /// against the directory containing `server.toml`, and loading all `profiles/*.toml`.
+    /// against the directory containing `server.toml`.
     pub fn load_from_path(path: &Path) -> anyhow::Result<Self> {
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let raw = fs::read_to_string(path)?;
         let mut cfg: Self = toml::from_str(&raw)?;
 
-        // Resolve relative file/dir paths relative to config file directory
         cfg.quic.cert = resolve_rel(base_dir, &cfg.quic.cert);
         cfg.quic.key = resolve_rel(base_dir, &cfg.quic.key);
         if let Some(p) = &cfg.dirs.providers {
             cfg.dirs.providers = Some(resolve_rel(base_dir, p));
-        }
-        if let Some(p) = &cfg.dirs.profiles {
-            let dir = resolve_rel(base_dir, p);
-            if dir.exists() {
-                let mut entries: Vec<PathBuf> = fs::read_dir(&dir)?
-                    .filter_map(|e| e.ok().map(|de| de.path()))
-                    .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("toml"))
-                    .collect();
-                entries.sort();
-                for file in entries {
-                    let content = fs::read_to_string(&file)?;
-                    let prof: ProfileFileConfig = toml::from_str(&content).map_err(|e| {
-                        anyhow::anyhow!("failed parsing profile {}: {e}", file.display())
-                    })?;
-                    cfg.profiles.push(prof);
-                }
-            }
-            cfg.dirs.profiles = Some(dir);
         }
 
         Ok(cfg)
@@ -434,9 +328,7 @@ username = "cx"
         assert_eq!(cfg.security.master_key_env, "CX_MASTER_KEY");
         assert!(cfg.security.master_key_inline.is_none());
 
-        let with_custom_env = format!(
-            "{raw}\n[security]\nmaster_key_env = \"CUSTOM_KEK\"\n"
-        );
+        let with_custom_env = format!("{raw}\n[security]\nmaster_key_env = \"CUSTOM_KEK\"\n");
         let cfg2: ServerFileConfig = toml::from_str(&with_custom_env).unwrap();
         assert_eq!(cfg2.security.master_key_env, "CUSTOM_KEK");
 
@@ -444,10 +336,12 @@ username = "cx"
         let legacy = format!("{raw}\n[storage]\nmaster_key_env = \"CX_MASTER_KEY\"\n");
         assert!(toml::from_str::<ServerFileConfig>(&legacy).is_err());
 
-        // Ensure shipped deployment example configs stay in sync with ServerFileConfig
+        // Ensure shipped deployment & dev example configs stay in sync with ServerFileConfig
         let _: ServerFileConfig =
             toml::from_str(include_str!("../../../deploy/server.toml.example")).unwrap();
         let _: ServerFileConfig =
             toml::from_str(include_str!("../../../deploy/server.docker.toml.example")).unwrap();
+        let _: ServerFileConfig =
+            toml::from_str(include_str!("../../../deploy/dev/server.dev.toml")).unwrap();
     }
 }

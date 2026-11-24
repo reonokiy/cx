@@ -1,4 +1,6 @@
 id = "github"
+name = "GitHub"
+icon = "github"
 version = "1.0.0"
 description = "GitHub CLI (gh) & Git over HTTPS"
 

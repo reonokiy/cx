@@ -21,6 +21,8 @@ RUN apt-get update \
 
 COPY cx-server /usr/local/bin/cx-server
 COPY providers/ /usr/share/cx/providers/
+COPY web/ /usr/share/cx/web/
+ENV CX_WEB_DIR=/usr/share/cx/web
 
 RUN chmod 0755 /usr/local/bin/cx-server
 

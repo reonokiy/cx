@@ -1,4 +1,6 @@
 id = "openai"
+name = "OpenAI"
+icon = "openai"
 version = "1.0.0"
 description = "OpenAI API CLI & SDK"
 

@@ -10,11 +10,13 @@ use cx_cli::netstack::{AsyncPacketIo, ChannelPacketIo, build_ipv4_udp_packet, ru
 use cx_cli::proxy_fallback::LocalFallbackProxy;
 use cx_cli::router::TrafficRouter;
 use cx_crypto::{EphemeralCa, VirtualKeyCharset, VirtualKeyFormat, VirtualKeySpec};
-use cx_plugin::{PolicyEffect, PolicyRuleConfig, SecretBinding};
+use cx_plugin::{
+    PlatformRoutingOverride, PlatformSpec, PolicyEffect, PolicyRuleConfig, ProfileSpec,
+    SecretBinding,
+};
 use cx_protocol::{CreateSessionRequest, CreateSessionResponse, DefaultRouteAction};
 use cx_server::config::{
-    BootstrapUserConfig, DirsConfig, HttpConfig, PostgresConfig, ProfileAllowConfig,
-    ProfileFileConfig, ProfilePolicyConfig, ProfileRoutingOverride, QuicConfig, SecurityConfig,
+    BootstrapUserConfig, DirsConfig, HttpConfig, PostgresConfig, QuicConfig, SecurityConfig,
     ServerFileConfig,
 };
 use cx_server::store::{MemoryStore, PostgresStore, ServerStore};
@@ -38,6 +40,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 const REAL_GITHUB_SECRET: &str = "ghp_REAL_SUPER_SECRET_TOKEN_987654321";
+const REAL_OPENAI_SECRET: &str = "sk-REAL_OPENAI_SECRET_KEY_123456789";
 
 /// Spin up a real TLS mock upstream HTTPS server for testing (`api.github.com`, `objects.githubusercontent.com`, `direct.example.org`).
 async fn start_mock_https_upstream(
@@ -381,6 +384,20 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
         })
         .await;
 
+    let (openai_addr, openai_ca_pem) =
+        start_mock_https_upstream(&["api.openai.com"], |_method, path, auth, _body| {
+            let auth_ok = auth.as_deref() == Some(&format!("Bearer {REAL_OPENAI_SECRET}"));
+            let leaked_gh = auth
+                .as_deref()
+                .map(|a| a.contains(REAL_GITHUB_SECRET))
+                .unwrap_or(false);
+            (
+                StatusCode::OK,
+                format!("openai_ok auth_ok={auth_ok} leaked_gh={leaked_gh} path={path}"),
+            )
+        })
+        .await;
+
     let (cdn_addr, cdn_ca_pem) =
         start_mock_https_upstream(&["objects.githubusercontent.com"], |_m, path, auth, _b| {
             // Tier 2 server_tunnel MUST NOT inject the real GitHub secret!
@@ -420,49 +437,64 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
 
     let mut upstream_overrides = BTreeMap::new();
     upstream_overrides.insert("api.github.com".into(), gh_addr.to_string());
+    upstream_overrides.insert("api.openai.com".into(), openai_addr.to_string());
     upstream_overrides.insert("objects.githubusercontent.com".into(), cdn_addr.to_string());
 
-    let profile = ProfileFileConfig {
+    let profile = ProfileSpec {
         name: "github-ro".into(),
-        provider: "github".into(),
-        params: BTreeMap::new(),
-        secrets: BTreeMap::from([(
-            "token".into(),
-            SecretBinding::Inline {
-                value: REAL_GITHUB_SECRET.into(),
+        description: "Multi-platform E2E profile".into(),
+        allowed_groups: vec!["eng".into()],
+        allowed_users: vec![],
+        deny_hosts: vec!["blocked.evil.test".into()],
+        fallback: DefaultRouteAction::ClientPassthrough,
+        platforms: vec![
+            PlatformSpec {
+                id: "github".into(),
+                provider_id: "github".into(),
+                params: BTreeMap::new(),
+                secrets: BTreeMap::from([(
+                    "token".into(),
+                    SecretBinding::Inline {
+                        value: REAL_GITHUB_SECRET.into(),
+                    },
+                )]),
+                virtual_key_override: Some(VirtualKeySpec {
+                    format: VirtualKeyFormat::Random,
+                    prefix: "gho_cx_".into(),
+                    suffix: String::new(),
+                    length: 36,
+                    charset: VirtualKeyCharset::Alnum,
+                }),
+                preset: Some("readonly".into()),
+                rules: vec![
+                    // Allow POST /issue specifically to test body non-replacement!
+                    PolicyRuleConfig {
+                        effect: PolicyEffect::Allow,
+                        methods: vec!["POST".into()],
+                        hosts: vec!["api.github.com".into()],
+                        paths: vec!["/issue".into()],
+                    },
+                ],
+                routing: PlatformRoutingOverride::default(),
+                allow_insecure_http: false,
             },
-        )]),
-        virtual_key: Some(VirtualKeySpec {
-            format: VirtualKeyFormat::Random,
-            prefix: "gho_cx_".into(),
-            suffix: String::new(),
-            length: 36,
-            charset: VirtualKeyCharset::Alnum,
-        }),
-        allow: ProfileAllowConfig {
-            groups: vec!["eng".into()],
-            users: vec![],
-        },
-        routing: ProfileRoutingOverride {
-            inject_hosts: None,
-            passthrough_hosts: None,
-            passthrough_ports: None,
-            deny_hosts: vec!["blocked.evil.test".into()],
-            fallback: Some(DefaultRouteAction::ClientPassthrough),
-        },
-        policy: ProfilePolicyConfig {
-            preset: Some("readonly".into()),
-            rules: vec![
-                // Allow POST /issue specifically to test body non-replacement!
-                PolicyRuleConfig {
-                    effect: PolicyEffect::Allow,
-                    methods: vec!["POST".into()],
-                    hosts: vec!["api.github.com".into()],
-                    paths: vec!["/issue".into()],
-                },
-            ],
-        },
-        allow_insecure_http: false,
+            PlatformSpec {
+                id: "openai".into(),
+                provider_id: "openai".into(),
+                params: BTreeMap::new(),
+                secrets: BTreeMap::from([(
+                    "api_key".into(),
+                    SecretBinding::Inline {
+                        value: REAL_OPENAI_SECRET.into(),
+                    },
+                )]),
+                virtual_key_override: None,
+                preset: Some("full".into()),
+                rules: vec![],
+                routing: PlatformRoutingOverride::default(),
+                allow_insecure_http: false,
+            },
+        ],
     };
 
     let server_cfg = ServerFileConfig {
@@ -492,18 +524,17 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
             master_key_env: "UNUSED".into(),
             master_key_inline: None,
             upstream_overrides,
-            extra_upstream_ca_pem: Some(gh_ca_pem.clone()),
+            extra_upstream_ca_pem: Some(format!("{gh_ca_pem}\n{openai_ca_pem}")),
         },
         dirs: DirsConfig {
             providers: None,
-            profiles: None,
             enable_builtin_providers: true,
         },
         bootstrap_users: vec![
             BootstrapUserConfig {
                 email: "alice@example.com".into(),
                 display_name: Some("Alice".into()),
-                groups: vec!["eng".into()],
+                groups: vec!["eng".into(), "cx-admins".into()],
                 token: Some("cx_alice_token".into()),
                 token_env: None,
             },
@@ -515,7 +546,6 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
                 token_env: None,
             },
         ],
-        profiles: vec![profile],
     };
 
     // If CX_TEST_PG_PORT is set, run the entire E2E test directly against live PostgreSQL!
@@ -540,6 +570,13 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
     } else {
         Arc::new(MemoryStore::new(None))
     };
+
+    let _ = store.delete_profile(&profile.name).await;
+    store
+        .create_profile(&profile, "e2e-rev-1", "alice@example.com")
+        .await
+        .unwrap()
+        .expect("seed e2e profile into store");
 
     let running = start_server_with_store(server_cfg, store).await.unwrap();
     let http_base = format!("http://{}", running.http_addr);
@@ -578,6 +615,15 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
     assert!(virtual_gh_token.starts_with("gho_cx_"));
     assert_eq!(virtual_gh_token.len(), "gho_cx_".len() + 36);
     assert_ne!(virtual_gh_token, REAL_GITHUB_SECRET);
+
+    let virtual_openai_token = session
+        .client
+        .env_inject
+        .get("OPENAI_API_KEY")
+        .unwrap()
+        .clone();
+    assert!(virtual_openai_token.starts_with("sk-cx-"));
+    assert_ne!(virtual_openai_token, REAL_OPENAI_SECRET);
 
     // 5. Connect real QUIC tunnel + start Approach 2 `smoltcp` NetStack over virtual L3 TUN!
     let tunnel = QuicTunnelClient::connect(
@@ -636,6 +682,43 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
     assert!(
         resp.contains("github_ok auth_ok=true"),
         "expected real GitHub secret injected on server, got: {resp}"
+    );
+
+    // === TEST B2: Second platform (`openai`) in the SAME QUIC session + cross-platform VK isolation! ===
+    let oa_fake_ip = virtual_child_dns_lookup(&child_tun_io, "api.openai.com")
+        .await
+        .unwrap();
+    let oa_resp = virtual_child_https_request(
+        &child_tun_io,
+        oa_fake_ip,
+        "api.openai.com",
+        ca.ca_pem(),
+        &format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: api.openai.com\r\nAuthorization: Bearer {virtual_openai_token}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        oa_resp.contains("openai_ok auth_ok=true leaked_gh=false"),
+        "expected OpenAI platform secret injected in same session, got: {oa_resp}"
+    );
+
+    // Presenting GitHub's virtual key to OpenAI MUST be rejected (403 INVALID_VIRTUAL_KEY)!
+    let cross_vk_resp = virtual_child_https_request(
+        &child_tun_io,
+        oa_fake_ip,
+        "api.openai.com",
+        ca.ca_pem(),
+        &format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: api.openai.com\r\nAuthorization: Bearer {virtual_gh_token}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        cross_vk_resp.contains("403") && cross_vk_resp.contains("INVALID_VIRTUAL_KEY"),
+        "GitHub virtual key must not unlock OpenAI platform secret! got: {cross_vk_resp}"
     );
 
     // === TEST C: Policy Enforcement (DELETE blocked by readonly preset!) ===
@@ -752,6 +835,108 @@ async fn end_to_end_netstack_quic_3tier_and_security_controls() {
     // === TEST I: Fallback `--mode proxy` sanity check ===
     let fallback = LocalFallbackProxy::start(Arc::clone(&router), "nonce123").await.unwrap();
     assert_ne!(fallback.addr.port(), 0);
+
+    // A console profile/platform rule update must apply to new requests on an already authenticated tunnel.
+    let profile_url = format!("{http_base}/v1/console/profiles/github-ro");
+    let current_profile: serde_json::Value = http
+        .get(&profile_url)
+        .bearer_auth("cx_alice_token")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mut updated_platforms: Vec<serde_json::Value> = current_profile["platforms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let mut spec = p["spec"].clone();
+            if spec["id"] == "github" {
+                spec["rules"] = serde_json::json!([
+                    { "effect": "deny", "methods": ["GET"], "hosts": ["api.github.com"], "paths": ["/repos/**"] }
+                ]);
+            }
+            spec
+        })
+        .collect();
+    let updated_profile: serde_json::Value = http
+        .put(&profile_url)
+        .bearer_auth("cx_alice_token")
+        .json(&serde_json::json!({
+            "revision": current_profile["revision"],
+            "description": current_profile["description"],
+            "allowed_groups": current_profile["allowed_groups"],
+            "allowed_users": current_profile["allowed_users"],
+            "deny_hosts": current_profile["deny_hosts"],
+            "fallback": current_profile["fallback"],
+            "platforms": updated_platforms,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let updated_response = virtual_child_https_request(
+        &child_tun_io,
+        gh_fake_ip,
+        "api.github.com",
+        ca.ca_pem(),
+        &format!(
+            "GET /repos/my-org/cx/pulls HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: token {virtual_gh_token}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        updated_response.contains("403") && updated_response.contains("POLICY_DENIED"),
+        "console policy must apply on the existing QUIC tunnel, got: {updated_response}"
+    );
+    // OpenAI platform in the same profile remains completely unaffected!
+    let oa_still_ok = virtual_child_https_request(
+        &child_tun_io,
+        oa_fake_ip,
+        "api.openai.com",
+        ca.ca_pem(),
+        &format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: api.openai.com\r\nAuthorization: Bearer {virtual_openai_token}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        oa_still_ok.contains("openai_ok auth_ok=true"),
+        "updating GitHub rules must not affect OpenAI platform, got: {oa_still_ok}"
+    );
+
+    // Restore github rules to empty on the profile
+    for spec in &mut updated_platforms {
+        if spec["id"] == "github" {
+            spec["rules"] = serde_json::json!([]);
+        }
+    }
+    http.put(&profile_url)
+        .bearer_auth("cx_alice_token")
+        .json(&serde_json::json!({
+            "revision": updated_profile["revision"],
+            "description": current_profile["description"],
+            "allowed_groups": current_profile["allowed_groups"],
+            "allowed_users": current_profile["allowed_users"],
+            "deny_hosts": current_profile["deny_hosts"],
+            "fallback": current_profile["fallback"],
+            "platforms": updated_platforms,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
 
     // Close client tunnel cleanly so in-flight L4 server_tunnel streams flush their closing audit rows
     let _ = shutdown_tx.send(true);

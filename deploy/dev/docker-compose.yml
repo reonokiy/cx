@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cx
+      POSTGRES_PASSWORD: ${CX_POSTGRES_PASSWORD:-cxdevpass}
+      POSTGRES_DB: cx
+    ports:
+      - "127.0.0.1:${CX_DEV_PG_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cx -d cx"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  dex:
+    image: ghcr.io/dexidp/dex:v2.45.1
+    restart: unless-stopped
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    environment:
+      CX_OIDC_CLIENT_SECRET: ${CX_OIDC_CLIENT_SECRET:-cx-dev-oidc-secret}
+    ports:
+      - "127.0.0.1:${CX_DEV_DEX_PORT:-5556}:5556"
+    volumes:
+      - ./dex.config.yaml:/etc/dex/config.yaml:ro
