@@ -1,0 +1,43 @@
+# Local development server configuration using Dex OIDC + PostgreSQL (`deploy/dev/docker-compose.yml`).
+# Start dependencies with `mise run dev-up`, then run `mise run dev-server`.
+
+[http]
+listen = "127.0.0.1:8080"
+external_url = "http://127.0.0.1:8080"
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
+
+[quic]
+listen = "127.0.0.1:8443"
+public_addr = "127.0.0.1:8443"
+server_name = "localhost"
+cert = "../../.cx-dev/certs/quic-cert.pem"
+key = "../../.cx-dev/certs/quic-key.pem"
+cert_reload_secs = 0
+keep_alive_secs = 15
+max_idle_timeout_secs = 60
+max_concurrent_bidi_streams = 64
+
+[oidc]
+issuer = "http://127.0.0.1:5556/dex"
+client_id = "cx-gateway"
+client_secret_env = "CX_OIDC_CLIENT_SECRET"
+scopes = ["openid", "profile", "email", "groups"]
+groups_claim = "groups"
+admin_groups = ["cx-admins"]
+
+[postgres]
+host = "127.0.0.1"
+port = 5432
+database = "cx"
+username = "cx"
+password_env = "CX_POSTGRES_PASSWORD"
+ssl_mode = "disable"
+max_connections = 8
+
+[security]
+block_private_ips = true
+session_ttl_secs = 900
+master_key_env = "CX_MASTER_KEY"
+
+[dirs]
+enable_builtin_providers = true

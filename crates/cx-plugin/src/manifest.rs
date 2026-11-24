@@ -13,6 +13,12 @@ pub const BUILTIN_GENERIC_HTTP_TOML: &str = include_str!("../../../providers/gen
 #[serde(deny_unknown_fields)]
 pub struct ProviderManifest {
     pub id: String,
+    /// Human-readable display name distinct from machine `id` (defaults to `id` when omitted).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Optional icon identifier (e.g. `"github"`, `"openai"`, `"globe"`), emoji, or `data:image/...` URI.
+    #[serde(default)]
+    pub icon: Option<String>,
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default)]
@@ -50,6 +56,17 @@ pub struct ProviderManifest {
 
 fn default_version() -> String {
     "1.0.0".to_string()
+}
+
+impl ProviderManifest {
+    /// Resolved UI display name (falls back to `id` when `name` is omitted or blank).
+    pub fn display_name(&self) -> &str {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.id)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

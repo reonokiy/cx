@@ -113,6 +113,9 @@ enum KeyAction {
     Create {
         #[arg(short, long)]
         profile: String,
+        /// Target platform ID inside the profile (optional when profile has 1 platform)
+        #[arg(long)]
+        platform: Option<String>,
         #[arg(long)]
         ttl_secs: Option<u64>,
     },
@@ -194,9 +197,14 @@ fn main() {
                 Ok(0)
             }
             Commands::Key {
-                action: KeyAction::Create { profile, ttl_secs },
+                action:
+                    KeyAction::Create {
+                        profile,
+                        platform,
+                        ttl_secs,
+                    },
             } => {
-                cmd_key_create(profile, ttl_secs).await?;
+                cmd_key_create(profile, platform, ttl_secs).await?;
                 Ok(0)
             }
             Commands::Token {

@@ -40,5 +40,4 @@ session_ttl_secs = 900
 
 [dirs]
 providers = "/etc/cx/providers"
-profiles = "/etc/cx/profiles"
 enable_builtin_providers = true

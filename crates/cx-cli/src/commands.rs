@@ -190,27 +190,39 @@ pub async fn cmd_profile_list() -> anyhow::Result<()> {
         return Ok(());
     }
     for p in profiles {
+        let plats: Vec<&str> = p.platforms.iter().map(|pl| pl.id.as_str()).collect();
         println!(
-            "{:<18} plugin={:<12} inject={:?} server_tunnel={:?}",
-            p.name, p.plugin_id, p.inject_hosts, p.server_tunnel_hosts
+            "{:<18} platforms={:?} inject={:?} server_tunnel={:?}",
+            p.name, plats, p.inject_hosts, p.server_tunnel_hosts
         );
     }
     Ok(())
 }
 
-pub async fn cmd_key_create(profile: String, ttl_secs: Option<u64>) -> anyhow::Result<()> {
+pub async fn cmd_key_create(
+    profile: String,
+    platform: Option<String>,
+    ttl_secs: Option<u64>,
+) -> anyhow::Result<()> {
     let creds = ClientCredentials::load()?;
     let http = reqwest::Client::new();
     let resp: CreateVirtualKeyResponse = http
         .post(format!("{}/v1/virtual-keys", creds.server_url))
         .bearer_auth(&creds.access_token)
-        .json(&CreateVirtualKeyRequest { profile, ttl_secs })
+        .json(&CreateVirtualKeyRequest {
+            profile,
+            platform,
+            ttl_secs,
+        })
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
-    println!("Virtual key created (profile: {}):", resp.profile);
+    println!(
+        "Virtual key created (profile: {}, platform: {}):",
+        resp.profile, resp.platform
+    );
     println!("  {}", resp.virtual_key);
     println!("Note: this key is a harmless placeholder; it only works when executed via `cx exec`.");
     Ok(())
@@ -290,14 +302,47 @@ pub async fn cmd_exec(
 }
 
 pub fn cmd_git_credential(op: Option<&str>) {
-    if op == Some("get") {
-        if let (Ok(user), Ok(vkey)) = (
-            std::env::var("CX_GIT_CRED_USER"),
-            std::env::var("CX_GIT_CRED_VKEY"),
-        ) {
-            println!("username={user}");
-            println!("password={vkey}");
+    if op != Some("get") {
+        return;
+    }
+    // Parse `host=...` from git credential stdin
+    let mut requested_host = String::new();
+    let mut input = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_ok() {
+        for line in input.lines() {
+            if let Some(h) = line.strip_prefix("host=") {
+                requested_host = h.trim().to_ascii_lowercase();
+                break;
+            }
         }
+    }
+    if let Ok(raw_map) = std::env::var("CX_GIT_CRED_MAP") {
+        if let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(&raw_map) {
+            let entry = if !requested_host.is_empty() {
+                map.get(&requested_host)
+            } else if map.len() == 1 {
+                map.values().next()
+            } else {
+                None
+            };
+            if let Some(entry) = entry {
+                if let (Some(user), Some(vkey)) = (
+                    entry.get("user").and_then(|v| v.as_str()),
+                    entry.get("vkey").and_then(|v| v.as_str()),
+                ) {
+                    println!("username={user}");
+                    println!("password={vkey}");
+                    return;
+                }
+            }
+        }
+    }
+    if let (Ok(user), Ok(vkey)) = (
+        std::env::var("CX_GIT_CRED_USER"),
+        std::env::var("CX_GIT_CRED_VKEY"),
+    ) {
+        println!("username={user}");
+        println!("password={vkey}");
     }
 }
 

@@ -1,0 +1,51 @@
+# Local development OIDC provider configuration for Dex (v2.45+).
+# Customize staticClients / staticPasswords below as needed for local testing.
+# Default password for all static dev accounts: "password"
+# Generate a new bcrypt hash with: htpasswd -nbBC 10 "" "your-password" | tr -d ':\n'
+
+issuer: http://127.0.0.1:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: cx-gateway
+    name: "CX Gateway Console"
+    secretEnv: CX_OIDC_CLIENT_SECRET
+    redirectURIs:
+      - http://127.0.0.1:8080/v1/auth/oidc/callback
+      - http://localhost:8080/v1/auth/oidc/callback
+      - http://127.0.0.1:5173/v1/auth/oidc/callback
+      - http://localhost:5173/v1/auth/oidc/callback
+
+enablePasswordDB: true
+
+staticPasswords:
+  # Administrator account (belongs to `cx-admins` + `eng`)
+  - email: "admin@example.com"
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: "admin"
+    userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
+    name: "CX Admin"
+    preferredUsername: "admin"
+    emailVerified: true
+    groups:
+      - "cx-admins"
+      - "eng"
+
+  # Regular developer account (belongs to `eng` only, non-admin RBAC testing)
+  - email: "dev@example.com"
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: "dev"
+    userID: "2f4d9087-1d75-4c09-a6d2-6b20b8851d11"
+    name: "CX Developer"
+    preferredUsername: "dev"
+    emailVerified: true
+    groups:
+      - "eng"

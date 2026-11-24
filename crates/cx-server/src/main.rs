@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use cx_crypto::{EphemeralCa, generate_random_token};
 use cx_plugin::{HostPatternValidator, ProviderRegistry};
 use cx_server::config::ServerFileConfig;
-use cx_server::start_server;
+use cx_server::start_server_with_options;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -25,8 +25,11 @@ enum Commands {
     Serve {
         #[arg(short, long, default_value = "server.toml")]
         config: PathBuf,
+        /// Seed a sample multi-platform `dev` profile (`github` + `openai`) when the database has no profiles
+        #[arg(long, default_value_t = false)]
+        seed_dev: bool,
     },
-    /// Generate a ready-to-run layered dev layout (`server.toml`, `providers/`, `profiles/`)
+    /// Generate a ready-to-run dev layout (`server.toml`, `providers/`)
     Init {
         #[arg(short, long, default_value = ".cx-dev")]
         dir: PathBuf,
@@ -69,9 +72,9 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Commands::Serve { config } => {
+        Commands::Serve { config, seed_dev } => {
             let cfg = ServerFileConfig::load_from_path(&config)?;
-            let running = start_server(cfg).await?;
+            let running = start_server_with_options(cfg, seed_dev).await?;
             println!(
                 "cx-server ready: HTTP control plane on {}, QUIC data plane on {}",
                 running.http_addr, running.quic_addr
@@ -81,7 +84,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Init { dir } => {
             fs::create_dir_all(dir.join("providers"))?;
-            fs::create_dir_all(dir.join("profiles"))?;
             let (cert_pem, key_pem) =
                 EphemeralCa::generate_dev_server_cert(&["localhost", "127.0.0.1"])?;
             let cert_path = dir.join("quic-cert.pem");
@@ -91,7 +93,6 @@ async fn main() -> anyhow::Result<()> {
 
             let dev_token = generate_random_token("cx_dev_", 32);
             let server_cfg_path = dir.join("server.toml");
-            let profile_cfg_path = dir.join("profiles/github-ro.toml");
 
             let server_toml = format!(
                 r#"[http]
@@ -117,7 +118,6 @@ max_connections = 16
 
 [dirs]
 providers = "./providers"
-profiles = "./profiles"
 
 [[bootstrap_users]]
 email = "dev@localhost"
@@ -127,49 +127,20 @@ token = "{dev_token}"
 "#
             );
 
-            let profile_toml = r#"name = "github-ro"
-provider = "github"
-
-[secrets.token]
-source = "env"
-var = "REAL_GITHUB_TOKEN"
-
-[allow]
-groups = ["eng-all", "cx-admins"]
-
-[routing]
-fallback = "client_passthrough"
-
-[policy]
-preset = "readonly"
-
-# 可选叠加自定义策略规则：
-# [[policy.rules]]
-# effect = "deny"
-# hosts = ["api.github.com"]
-# paths = ["/repos/my-org/billing/**"]
-"#;
-
             fs::write(&server_cfg_path, server_toml)?;
-            fs::write(&profile_cfg_path, profile_toml)?;
 
             println!("Initialized dev cx-server layout in {}", dir.display());
             println!("  Server:    {}", server_cfg_path.display());
-            println!("  Profile:   {}", profile_cfg_path.display());
             println!("  Providers: {}/providers (drop custom *.toml here)", dir.display());
             println!("  QUIC cert: {}", cert_path.display());
             println!("  Dev token: {dev_token}");
             println!("\nNext steps:");
             println!("  docker run -d --name cx-pg -e POSTGRES_USER=cx -e POSTGRES_PASSWORD=cxpass -e POSTGRES_DB=cx -p 127.0.0.1:5432:5432 postgres:17-alpine");
             println!(
-                "  CX_POSTGRES_PASSWORD=cxpass REAL_GITHUB_TOKEN=ghp_xxx cx-server serve -c {}",
+                "  CX_POSTGRES_PASSWORD=cxpass CX_MASTER_KEY=$(openssl rand -base64 32) cx-server serve -c {}",
                 server_cfg_path.display()
             );
-            println!(
-                "  cx login --server http://127.0.0.1:8080 --token {dev_token} --quic-ca {}",
-                cert_path.display()
-            );
-            println!("  cx exec -p github-ro -- gh api /user");
+            println!("  Open http://127.0.0.1:8080/ui/ to create your first multi-platform Profile.");
         }
         Commands::Provider { action } => match action {
             ProviderAction::List { dir } => {

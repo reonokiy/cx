@@ -1,6 +1,13 @@
 # Multi-stage build for cx-server (HTTP Control Plane + QUIC Data Plane)
 ARG RUST_VERSION=1-slim-bookworm
 
+FROM node:24-slim AS web-builder
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM rust:${RUST_VERSION} AS builder
 
 # `ring` compiles small C/asm primitives; no OpenSSL or libpq headers required
@@ -39,6 +46,8 @@ RUN apt-get update \
 
 COPY --from=builder /app/target/release/cx-server /usr/local/bin/cx-server
 COPY providers/ /usr/share/cx/providers/
+COPY --from=web-builder /web/dist /usr/share/cx/web
+ENV CX_WEB_DIR=/usr/share/cx/web
 
 USER cx
 WORKDIR /etc/cx

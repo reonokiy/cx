@@ -40,5 +40,4 @@ session_ttl_secs = 900
 
 [dirs]
 providers = "./providers"
-profiles = "./profiles"
 enable_builtin_providers = true

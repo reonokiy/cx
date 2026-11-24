@@ -202,6 +202,11 @@ pub fn pattern_is_subset_of(narrow: &str, allowed: &[String]) -> bool {
     })
 }
 
+/// Check if two host patterns (`a` and `b`) can match any common hostname.
+pub fn patterns_overlap(a: &str, b: &str) -> bool {
+    pattern_is_subset_of(a, &[b.to_string()]) || pattern_is_subset_of(b, &[a.to_string()])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

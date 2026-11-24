@@ -1,4 +1,5 @@
 pub mod config;
+mod console;
 pub mod controlplane;
 pub mod dataplane;
 pub mod oidc;
@@ -11,6 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use cx_crypto::{EnvelopeCipher, HotReloadCertResolver, SessionSigner};
 use cx_plugin::{HostPatternValidator, ProviderRegistry, ResolvedProfile, SecretBinding};
 use cx_tunnel::{QuicTuning, QuicTunnelServer};
@@ -33,10 +35,89 @@ pub struct RunningServer {
 
 /// Production entrypoint: connects to PostgreSQL, runs migrations, and starts Control + Data planes.
 pub async fn start_server(cfg: ServerFileConfig) -> anyhow::Result<RunningServer> {
+    start_server_with_options(cfg, false).await
+}
+
+/// Start server with optional dev seeding (seeds a sample multi-platform `dev` profile when DB is empty).
+pub async fn start_server_with_options(
+    cfg: ServerFileConfig,
+    seed_dev: bool,
+) -> anyhow::Result<RunningServer> {
     let cipher = resolve_cipher(&cfg)?;
     let store: Arc<dyn ServerStore> =
         Arc::new(PostgresStore::connect(&cfg.postgres, cipher).await?);
+    if seed_dev {
+        seed_dev_profile_if_empty(&store).await?;
+    }
     start_server_with_store(cfg, store).await
+}
+
+async fn seed_dev_profile_if_empty(store: &Arc<dyn ServerStore>) -> anyhow::Result<()> {
+    if !store.list_profiles().await?.is_empty() {
+        return Ok(());
+    }
+    use cx_plugin::{
+        PlatformRoutingOverride, PlatformSpec, PolicyEffect, PolicyRuleConfig, ProfileSpec,
+        SecretScope,
+    };
+    use cx_protocol::DefaultRouteAction;
+
+    let sample = ProfileSpec {
+        name: "dev".into(),
+        description: "本地开发示例工作区（GitHub 只读 + OpenAI）".into(),
+        allowed_groups: vec!["eng".into(), "cx-admins".into()],
+        allowed_users: vec![],
+        deny_hosts: vec![],
+        fallback: DefaultRouteAction::ClientPassthrough,
+        platforms: vec![
+            PlatformSpec {
+                id: "github".into(),
+                provider_id: "github".into(),
+                params: BTreeMap::new(),
+                secrets: BTreeMap::from([(
+                    "token".into(),
+                    SecretBinding::Db {
+                        scope: SecretScope::Shared,
+                        name: "dev/github".into(),
+                        field: None,
+                    },
+                )]),
+                virtual_key_override: None,
+                preset: Some("readonly".into()),
+                rules: vec![PolicyRuleConfig {
+                    effect: PolicyEffect::Deny,
+                    methods: vec!["GET".into()],
+                    hosts: vec!["api.github.com".into()],
+                    paths: vec!["/repos/example/internal/**".into()],
+                }],
+                routing: PlatformRoutingOverride::default(),
+                allow_insecure_http: false,
+            },
+            PlatformSpec {
+                id: "openai".into(),
+                provider_id: "openai".into(),
+                params: BTreeMap::new(),
+                secrets: BTreeMap::from([(
+                    "api_key".into(),
+                    SecretBinding::Db {
+                        scope: SecretScope::Personal,
+                        name: "openai".into(),
+                        field: None,
+                    },
+                )]),
+                virtual_key_override: None,
+                preset: Some("full".into()),
+                rules: vec![],
+                routing: PlatformRoutingOverride::default(),
+                allow_insecure_http: false,
+            },
+        ],
+    };
+
+    let rev = uuid::Uuid::new_v4().to_string();
+    let _ = store.create_profile(&sample, &rev, "dev-seed").await?;
+    info!("seeded sample multi-platform profile 'dev' (github + openai)");
+    Ok(())
 }
 
 /// Start server with an explicit `ServerStore` implementation (used by `start_server` and tests).
@@ -67,7 +148,7 @@ pub async fn start_server_with_store(
         }
     }
 
-    // Load provider plugins and resolve profiles
+    // Load provider plugins and resolve all profiles stored in the database
     let validator = HostPatternValidator {
         allow_private_targets: cfg.security.allow_private_targets,
         allow_apex_wildcard: false,
@@ -78,31 +159,36 @@ pub async fn start_server_with_store(
         validator,
     )?;
 
+    let stored_profiles = store.list_profiles().await?;
     let mut resolved_profiles: BTreeMap<String, Arc<ResolvedProfile>> = BTreeMap::new();
-    for pcfg in &cfg.profiles {
-        let resolved = registry.resolve_profile(&pcfg.to_profile_spec())?;
+    for stored in stored_profiles {
+        let resolved = registry.resolve_profile(&stored.spec)?;
         if !store.has_master_key() {
-            for (field, binding) in &resolved.secret_bindings {
-                if matches!(binding, SecretBinding::Db { .. }) {
-                    anyhow::bail!(
-                        "profile '{}' binds [secrets.{}] to source = \"db\", which requires a 32-byte base64 master key in env '{}' (generate with: openssl rand -base64 32)",
-                        resolved.name,
-                        field,
-                        cfg.security.master_key_env
-                    );
+            for platform in resolved.platforms.values() {
+                for (field, binding) in &platform.secret_bindings {
+                    if matches!(binding, SecretBinding::Db { .. }) {
+                        tracing::warn!(
+                            profile = %resolved.name,
+                            platform = %platform.id,
+                            field = %field,
+                            master_key_env = %cfg.security.master_key_env,
+                            "profile platform binds secret to source = \"db\", but master key is not configured; DB secret writes and decryption will fail closed until set"
+                        );
+                    }
                 }
             }
         }
+        let platform_ids: Vec<&str> = resolved.platforms.keys().map(String::as_str).collect();
         info!(
             profile = %resolved.name,
-            provider = %resolved.provider_id,
+            platforms = ?platform_ids,
             inject_hosts = ?resolved.routing.inject_hosts,
             passthrough_hosts = ?resolved.routing.server_tunnel_hosts,
-            "loaded profile"
+            "loaded profile from store"
         );
         resolved_profiles.insert(resolved.name.clone(), Arc::new(resolved));
     }
-    let profiles = Arc::new(resolved_profiles);
+    let profiles = Arc::new(ArcSwap::from_pointee(resolved_profiles));
 
     // Prepare QUIC hot-reloading TLS cert resolver
     let cert_resolver = HotReloadCertResolver::from_pem_files(&cfg.quic.cert, &cfg.quic.key)?;
@@ -189,6 +275,8 @@ pub async fn start_server_with_store(
         store: Arc::clone(&store),
         oidc: oidc_client,
         profiles,
+        registry,
+        profile_write: tokio::sync::Mutex::new(()),
     });
 
     let router = build_router(cp_state);
@@ -216,7 +304,6 @@ pub async fn start_server_with_store(
 
 /// Resolve optional AES-256-GCM master key (KEK) from `[security].master_key_inline`
 /// or `[security].master_key_env` (default `CX_MASTER_KEY`).
-/// Returns `Ok(None)` cleanly when unset — only required when using DB-stored secrets (`source = "db"`).
 pub fn resolve_cipher(cfg: &ServerFileConfig) -> anyhow::Result<Option<EnvelopeCipher>> {
     if let Some(b64) = &cfg.security.master_key_inline {
         let trimmed = b64.trim();
@@ -236,15 +323,22 @@ pub fn resolve_cipher(cfg: &ServerFileConfig) -> anyhow::Result<Option<EnvelopeC
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        DirsConfig, HttpConfig, PostgresConfig, ProfileAllowConfig, ProfileFileConfig,
-        ProfilePolicyConfig, ProfileRoutingOverride, QuicConfig, SecurityConfig,
-    };
+    use crate::config::{DirsConfig, HttpConfig, PostgresConfig, QuicConfig, SecurityConfig};
     use crate::store::MemoryStore;
-    use cx_plugin::SecretScope;
+    use cx_plugin::{PlatformRoutingOverride, PlatformSpec, ProfileSpec, SecretScope};
+    use cx_protocol::DefaultRouteAction;
 
     #[tokio::test]
-    async fn db_secret_requires_master_key_while_env_secret_does_not() {
+    async fn db_secret_fails_closed_without_master_key_without_blocking_boot() {
+        let dir = std::env::temp_dir().join(format!("cx-boot-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (cert_pem, key_pem) =
+            cx_crypto::EphemeralCa::generate_dev_server_cert(&["localhost", "127.0.0.1"]).unwrap();
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, cert_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
         let cfg = ServerFileConfig {
             http: HttpConfig {
                 listen: "127.0.0.1:0".into(),
@@ -255,8 +349,8 @@ mod tests {
                 listen: "127.0.0.1:0".into(),
                 public_addr: "127.0.0.1:0".into(),
                 server_name: Some("localhost".into()),
-                cert: "/nonexistent/cert.pem".into(),
-                key: "/nonexistent/key.pem".into(),
+                cert: cert_path,
+                key: key_path,
                 cert_reload_secs: 0,
                 keep_alive_secs: 15,
                 max_idle_timeout_secs: 60,
@@ -270,46 +364,66 @@ mod tests {
             },
             dirs: DirsConfig {
                 providers: None,
-                profiles: None,
                 enable_builtin_providers: true,
             },
             bootstrap_users: vec![],
-            profiles: vec![ProfileFileConfig {
-                name: "github-db".into(),
-                provider: "github".into(),
-                params: BTreeMap::new(),
-                secrets: BTreeMap::from([(
-                    "token".into(),
-                    SecretBinding::Db {
-                        scope: SecretScope::Shared,
-                        name: "github-shared".into(),
-                        field: None,
-                    },
-                )]),
-                virtual_key: None,
-                allow: ProfileAllowConfig {
-                    groups: vec!["eng".into()],
-                    users: vec![],
-                },
-                routing: ProfileRoutingOverride::default(),
-                policy: ProfilePolicyConfig {
-                    preset: Some("readonly".into()),
-                    rules: vec![],
-                },
-                allow_insecure_http: false,
-            }],
         };
 
         assert!(resolve_cipher(&cfg).unwrap().is_none());
 
         let store: Arc<dyn ServerStore> = Arc::new(MemoryStore::new(None));
-        let err = start_server_with_store(cfg, store)
+        store
+            .create_profile(
+                &ProfileSpec {
+                    name: "github-db".into(),
+                    description: String::new(),
+                    allowed_groups: vec!["eng".into()],
+                    allowed_users: vec![],
+                    deny_hosts: vec![],
+                    fallback: DefaultRouteAction::ClientPassthrough,
+                    platforms: vec![PlatformSpec {
+                        id: "github".into(),
+                        provider_id: "github".into(),
+                        params: BTreeMap::new(),
+                        secrets: BTreeMap::from([(
+                            "token".into(),
+                            SecretBinding::Db {
+                                scope: SecretScope::Shared,
+                                name: "github-shared".into(),
+                                field: None,
+                            },
+                        )]),
+                        virtual_key_override: None,
+                        preset: Some("readonly".into()),
+                        rules: vec![],
+                        routing: PlatformRoutingOverride::default(),
+                        allow_insecure_http: false,
+                    }],
+                },
+                "rev-1",
+                "test@example.com",
+            )
             .await
-            .err()
-            .expect("expected startup to fail without master key when using source=db");
+            .unwrap();
+
+        let running = start_server_with_store(cfg, Arc::clone(&store))
+            .await
+            .expect("server should boot cleanly even without master key");
+        assert!(running.http_addr.port() > 0);
+
+        let err = store
+            .upsert_encrypted_secret(
+                "github-shared",
+                "shared",
+                None,
+                &BTreeMap::from([("token".into(), "secret".into())]),
+            )
+            .await
+            .unwrap_err();
         assert!(
-            err.to_string().contains("CX_TEST_UNSET_MASTER_KEY_999"),
+            matches!(err, crate::store::StoreError::MasterKeyNotConfigured),
             "unexpected error: {err:#}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

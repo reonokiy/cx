@@ -42,3 +42,15 @@ run = "./scripts/build-server-image.sh --multi-stage"
 [tasks.validate-providers]
 description = "Validate all built-in provider manifests"
 run = "for f in providers/*.toml; do cargo run --quiet --bin cx-server -- provider validate \"$f\"; done"
+
+[tasks.dev-up]
+description = "Start local dev PostgreSQL + Dex OIDC provider"
+run = "./scripts/dev-server.sh --deps-only"
+
+[tasks.dev-server]
+description = "Start local dev dependencies (Postgres + Dex) and run cx-server"
+run = "./scripts/dev-server.sh"
+
+[tasks.dev-down]
+description = "Stop local dev PostgreSQL + Dex containers"
+run = "docker compose -f deploy/dev/docker-compose.yml down"

@@ -217,7 +217,10 @@ mod tests {
             email: "alice@example.com".into(),
             groups: vec!["eng".into()],
             profile: "github-ro".into(),
-            vk_hash: hash_secret_hex("gho_cx_test"),
+            vk_hashes: std::collections::BTreeMap::from([(
+                "github".into(),
+                hash_secret_hex("gho_cx_test"),
+            )]),
             client_ip: "203.0.113.5".into(),
             iat: chrono::Utc::now().timestamp(),
             exp: chrono::Utc::now().timestamp() + 300,

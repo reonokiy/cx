@@ -67,6 +67,16 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
   cargo build --release --locked --bin cx-server
 fi
 
+if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  npm --prefix web ci
+  npm --prefix web run build
+fi
+
+if [[ ! -f "${ROOT_DIR}/web/dist/index.html" ]]; then
+  echo "ERROR: Web console assets not found. Run npm --prefix web ci and npm --prefix web run build." >&2
+  exit 1
+fi
+
 BIN_PATH="${ROOT_DIR}/target/release/cx-server"
 if [[ ! -x "$BIN_PATH" ]]; then
   echo "ERROR: release binary not found: $BIN_PATH" >&2
@@ -78,6 +88,7 @@ trap 'rm -rf "$CTX_DIR"' EXIT
 
 install -m 0755 "$BIN_PATH" "${CTX_DIR}/cx-server"
 cp -r "${ROOT_DIR}/providers" "${CTX_DIR}/providers"
+cp -r "${ROOT_DIR}/web/dist" "${CTX_DIR}/web"
 cp "${ROOT_DIR}/deploy/Dockerfile.prebuilt" "${CTX_DIR}/Dockerfile"
 
 docker build \
