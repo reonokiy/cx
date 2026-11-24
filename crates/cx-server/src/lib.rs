@@ -48,8 +48,45 @@ pub async fn start_server_with_options(
         Arc::new(PostgresStore::connect(&cfg.postgres, cipher).await?);
     if seed_dev {
         seed_dev_profile_if_empty(&store).await?;
+    } else {
+        seed_default_profile_if_empty(&store, &cfg).await?;
     }
     start_server_with_store(cfg, store).await
+}
+
+async fn seed_default_profile_if_empty(
+    store: &Arc<dyn ServerStore>,
+    cfg: &ServerFileConfig,
+) -> anyhow::Result<()> {
+    if !store.list_profiles().await?.is_empty() {
+        return Ok(());
+    }
+    use cx_plugin::ProfileSpec;
+    use cx_protocol::DefaultRouteAction;
+
+    let admin_groups = cfg
+        .oidc
+        .as_ref()
+        .map(|o| o.admin_groups.clone())
+        .filter(|g| !g.is_empty())
+        .unwrap_or_else(|| vec!["cx-admins".into()]);
+
+    let default_profile = ProfileSpec {
+        name: "default".into(),
+        description: String::new(),
+        allowed_groups: admin_groups,
+        allowed_users: vec![],
+        deny_hosts: vec![],
+        fallback: DefaultRouteAction::ClientPassthrough,
+        platforms: vec![],
+    };
+
+    let rev = uuid::Uuid::new_v4().to_string();
+    let _ = store
+        .create_profile(&default_profile, &rev, "system")
+        .await?;
+    info!("seeded initial empty 'default' profile");
+    Ok(())
 }
 
 async fn seed_dev_profile_if_empty(store: &Arc<dyn ServerStore>) -> anyhow::Result<()> {
@@ -133,6 +170,7 @@ pub async fn start_server_with_store(
                 &bu.email,
                 &bu.email,
                 bu.display_name.as_deref().unwrap_or(&bu.email),
+                None,
                 &bu.groups,
             )
             .await?;

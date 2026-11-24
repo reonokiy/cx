@@ -7,6 +7,7 @@ import { AppShell } from "@/components/layout/app-shell"
 import { LoginPage } from "@/features/auth/login-page"
 import { useHashRoute } from "@/hooks/use-hash-route"
 import { AuthProvider, useAuth } from "@/lib/auth"
+import { I18nProvider, useI18n } from "@/lib/i18n"
 import { ProfileProvider } from "@/lib/profile-context"
 import { ThemeProvider } from "@/lib/theme"
 
@@ -60,13 +61,16 @@ function PageFallback() {
 function AuthenticatedApp() {
   const { session, isRestoring } = useAuth()
   const { route, params, navigate } = useHashRoute()
+  const { t } = useI18n()
 
   if (isRestoring) {
     return (
       <div className="flex min-h-svh items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-3">
           <Skeleton className="size-10 rounded-xl" />
-          <p className="text-xs text-muted-foreground">正在恢复控制台会话…</p>
+          <p className="text-xs text-muted-foreground">
+            {t("app.restoringSession")}
+          </p>
         </div>
       </div>
     )
@@ -107,16 +111,18 @@ function AuthenticatedApp() {
 
 export function App() {
   return (
-    <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <TooltipProvider delayDuration={200}>
-          <AuthProvider>
-            <AuthenticatedApp />
-          </AuthProvider>
-          <Toaster position="bottom-right" richColors closeButton />
-        </TooltipProvider>
-      </QueryClientProvider>
-    </ThemeProvider>
+    <I18nProvider>
+      <ThemeProvider>
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider delayDuration={200}>
+            <AuthProvider>
+              <AuthenticatedApp />
+            </AuthProvider>
+            <Toaster position="bottom-right" richColors closeButton />
+          </TooltipProvider>
+        </QueryClientProvider>
+      </ThemeProvider>
+    </I18nProvider>
   )
 }
 

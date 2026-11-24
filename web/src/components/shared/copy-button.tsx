@@ -7,6 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useI18n } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 
 interface CopyButtonProps {
@@ -21,15 +22,19 @@ interface CopyButtonProps {
 
 export function CopyButton({
   value,
-  label = "复制",
-  toastMessage = "已复制到剪贴板",
+  label,
+  toastMessage,
   variant = "ghost",
   size = "icon-xs",
   showLabel = false,
   className,
 }: CopyButtonProps) {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const timerRef = useRef<number | null>(null)
+
+  const resolvedLabel = label ?? t("common.copy")
+  const resolvedToast = toastMessage ?? t("common.copiedToast")
 
   useEffect(() => {
     return () => {
@@ -41,11 +46,11 @@ export function CopyButton({
     try {
       await navigator.clipboard.writeText(value)
       setCopied(true)
-      toast.success(toastMessage)
+      toast.success(resolvedToast)
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
       timerRef.current = window.setTimeout(() => setCopied(false), 1800)
     } catch {
-      toast.error("复制失败，请手动选中并复制。")
+      toast.error(t("common.copyFailed"))
     }
   }
 
@@ -55,7 +60,7 @@ export function CopyButton({
       variant={variant}
       size={size}
       onClick={() => void handleCopy()}
-      aria-label={label}
+      aria-label={resolvedLabel}
       className={cn(className)}
     >
       {copied ? (
@@ -63,7 +68,7 @@ export function CopyButton({
       ) : (
         <Copy className="text-muted-foreground" />
       )}
-      {showLabel && <span>{copied ? "已复制" : label}</span>}
+      {showLabel && <span>{copied ? t("common.copied") : resolvedLabel}</span>}
     </Button>
   )
 
@@ -72,7 +77,7 @@ export function CopyButton({
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent>{copied ? "已复制" : label}</TooltipContent>
+      <TooltipContent>{copied ? t("common.copied") : resolvedLabel}</TooltipContent>
     </Tooltip>
   )
 }

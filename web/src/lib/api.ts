@@ -1,3 +1,5 @@
+import { getCurrentLocale, translate } from "@/lib/i18n"
+
 export type SecretScope = "personal" | "shared"
 export type DefaultRouteAction = "client_passthrough" | "deny"
 export type PolicyEffect = "allow" | "deny"
@@ -148,6 +150,7 @@ export interface UpdateProfileInput {
 export interface ConsoleContext {
   email: string
   display_name: string
+  avatar_url?: string | null
   admin: boolean
   encryption_ready: boolean
   providers: ProviderCatalogEntry[]
@@ -159,6 +162,7 @@ export interface UserSummary {
   id: string
   email: string
   display_name: string
+  avatar_url?: string | null
   groups: string[]
 }
 
@@ -232,7 +236,10 @@ export class ApiError extends Error {
   readonly detail: string
 
   constructor(status: number, detail: string) {
-    super(detail || `请求失败（HTTP ${status}）`)
+    super(
+      detail ||
+        translate(getCurrentLocale(), "error.requestFailed", { status })
+    )
     this.name = "ApiError"
     this.status = status
     this.detail = detail
@@ -240,15 +247,18 @@ export class ApiError extends Error {
 }
 
 export function getErrorMessage(error: unknown): string {
+  const locale = getCurrentLocale()
   if (error instanceof ApiError) {
-    if (error.status === 401) return error.detail || "登录会话已过期，请重新登录。"
-    if (error.status === 403) return error.detail || "当前账号没有执行该操作的权限。"
+    if (error.status === 401)
+      return error.detail || translate(locale, "error.unauthorized")
+    if (error.status === 403)
+      return error.detail || translate(locale, "error.forbidden")
     if (error.status === 409)
-      return error.detail || "配置已被其他人更新，请刷新后再试。"
+      return error.detail || translate(locale, "error.conflict")
     return error.message
   }
   if (error instanceof Error) return error.message
-  return "请求失败，请检查网络连接后重试。"
+  return translate(locale, "error.network")
 }
 
 export interface CxApiClient {

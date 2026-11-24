@@ -57,6 +57,7 @@ import {
 import { getErrorMessage, type DefaultRouteAction } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { formatDateTime } from "@/lib/format"
+import { useI18n } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 
 function splitTokens(raw: string): string[] {
@@ -75,6 +76,7 @@ function splitLines(raw: string): string[] {
 
 function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
   const { activeProfile } = useActiveProfile()
+  const { locale, t } = useI18n()
   const detailQuery = useProfileDetailQuery(activeProfile)
   const updateProfile = useUpdateProfileMutation(activeProfile)
   const deleteProfile = useDeleteProfileMutation()
@@ -118,7 +120,7 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
         fallback,
         platforms: detail.platforms.map((p) => p.spec),
       })
-      toast.success(`已保存 Profile ${detail.name} 的设置`)
+      toast.success(t("settings.toastSaved", { name: detail.name }))
     } catch (err) {
       const msg = getErrorMessage(err)
       setError(msg)
@@ -130,7 +132,7 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
     if (!detail) return
     try {
       await deleteProfile.mutateAsync(detail.name)
-      toast.success(`已删除 Profile ${detail.name}`)
+      toast.success(t("settings.toastDeleted", { name: detail.name }))
       setConfirmDelete(false)
       onDeleted()
     } catch (err) {
@@ -143,30 +145,33 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
       <Card className="shadow-xs">
         <CardHeader>
           <CardTitle className="text-sm font-medium">
-            基本配置与访问权限
+            {t("settings.basicTitle")}
           </CardTitle>
           <CardDescription className="text-xs tabular-nums">
-            最后由 {detail.updated_by} 更新于 {formatDateTime(detail.updated_at)}
+            {t("settings.lastUpdated", {
+              user: detail.updated_by,
+              time: formatDateTime(detail.updated_at, locale),
+            })}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSave} className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="settings-desc" className="text-xs">
-                说明
+                {t("settings.desc")}
               </Label>
               <Input
                 id="settings-desc"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="该 Profile 的适用场景说明"
+                placeholder={t("settings.descPlaceholder")}
               />
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="settings-groups" className="text-xs">
-                  允许访问的 OIDC 用户组（逗号分隔）
+                  {t("settings.groups")}
                 </Label>
                 <Input
                   id="settings-groups"
@@ -179,7 +184,7 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
 
               <div className="space-y-1.5">
                 <Label htmlFor="settings-users" className="text-xs">
-                  额外允许的用户邮箱（可选，逗号分隔）
+                  {t("settings.users")}
                 </Label>
                 <Input
                   id="settings-users"
@@ -193,7 +198,7 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
 
             <div className="space-y-1.5">
               <Label htmlFor="settings-fallback" className="text-xs">
-                未匹配域名兜底策略
+                {t("settings.fallback")}
               </Label>
               <Select
                 value={fallback}
@@ -204,16 +209,18 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="client_passthrough">
-                    客户端直连（默认）
+                    {t("settings.fallbackPassthrough")}
                   </SelectItem>
-                  <SelectItem value="deny">严格拒绝（仅放行已挂载平台域名）</SelectItem>
+                  <SelectItem value="deny">
+                    {t("settings.fallbackDeny")}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             <div className="space-y-1.5">
               <Label htmlFor="settings-deny-hosts" className="text-xs">
-                全局黑名单域名（可选，每行一个）
+                {t("settings.denyHosts")}
               </Label>
               <Textarea
                 id="settings-deny-hosts"
@@ -234,7 +241,9 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
 
             <Button type="submit" size="sm" disabled={updateProfile.isPending}>
               <Save />
-              {updateProfile.isPending ? "保存中…" : "保存设置"}
+              {updateProfile.isPending
+                ? t("common.saving")
+                : t("settings.saveSettings")}
             </Button>
           </form>
         </CardContent>
@@ -243,9 +252,11 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
       <Card className="border-destructive/30 shadow-xs">
         <CardContent className="flex flex-col justify-between gap-3 py-4 sm:flex-row sm:items-center">
           <div className="space-y-0.5">
-            <p className="text-sm font-medium">删除 Profile</p>
+            <p className="text-sm font-medium">{t("settings.deleteTitle")}</p>
             <p className="text-xs text-muted-foreground">
-              将永久移除 <code className="font-mono">{detail.name}</code> 及其下所有平台绑定与规则（不删除历史审计日志与加密凭据本身）。
+              {t("settings.deleteDescBefore")}{" "}
+              <code className="font-mono">{detail.name}</code>{" "}
+              {t("settings.deleteDescAfter")}
             </p>
           </div>
           <Button
@@ -256,7 +267,7 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
             disabled={deleteProfile.isPending}
           >
             <Trash2 />
-            删除 Profile
+            {t("settings.deleteTitle")}
           </Button>
         </CardContent>
       </Card>
@@ -264,14 +275,16 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>确认删除 Profile {detail.name}？</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("settings.deleteConfirmTitle", { name: detail.name })}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              删除后，使用该 Profile 的新会话将立即失效，此操作无法撤销。
+              {t("settings.deleteConfirmDesc")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deleteProfile.isPending}>
-              取消
+              {t("common.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(e) => {
@@ -281,7 +294,9 @@ function ProfileSettingsTab({ onDeleted }: { onDeleted: () => void }) {
               disabled={deleteProfile.isPending}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deleteProfile.isPending ? "删除中…" : "确认删除"}
+              {deleteProfile.isPending
+                ? t("common.deleting")
+                : t("settings.confirmDelete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -299,6 +314,7 @@ export function SettingsPage({
 }) {
   const { session } = useAuth()
   const { activeProfile } = useActiveProfile()
+  const { t } = useI18n()
   const isAdmin = Boolean(session?.context.admin)
 
   const defaultTab =
@@ -311,7 +327,11 @@ export function SettingsPage({
   const [tab, setTab] = useState(defaultTab)
 
   useEffect(() => {
-    if (initialTab === "profile" || initialTab === "vkeys" || initialTab === "tokens") {
+    if (
+      initialTab === "profile" ||
+      initialTab === "vkeys" ||
+      initialTab === "tokens"
+    ) {
       setTab(initialTab)
     }
   }, [initialTab])
@@ -319,17 +339,17 @@ export function SettingsPage({
   if (!activeProfile) {
     return (
       <div className="flex flex-col gap-5">
-        <PageHeader title="设置与令牌" />
+        <PageHeader title={t("nav.settings")} />
         <Card className="shadow-xs">
           <Empty className="border-0 py-14">
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <SlidersHorizontal />
               </EmptyMedia>
-              <EmptyTitle className="text-base">尚未选择 Profile</EmptyTitle>
-              <EmptyDescription>
-                请先在左上角新建或选择一个 Profile。
-              </EmptyDescription>
+              <EmptyTitle className="text-base">
+                {t("settings.emptyTitle")}
+              </EmptyTitle>
+              <EmptyDescription>{t("settings.emptyDesc")}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         </Card>
@@ -339,23 +359,23 @@ export function SettingsPage({
 
   return (
     <div className="flex flex-col gap-5">
-      <PageHeader title="设置与令牌" />
+      <PageHeader title={t("nav.settings")} />
 
       <Tabs value={tab} onValueChange={setTab} className="space-y-4">
         <TabsList>
           {isAdmin && (
             <TabsTrigger value="profile" className="gap-1.5">
               <SlidersHorizontal className="size-3.5" />
-              Profile 设置
+              {t("settings.tabProfile")}
             </TabsTrigger>
           )}
           <TabsTrigger value="vkeys" className="gap-1.5">
             <KeyRound className="size-3.5" />
-            虚拟密钥
+            {t("settings.tabVirtualKeys")}
           </TabsTrigger>
           <TabsTrigger value="tokens" className="gap-1.5">
             <KeySquare className="size-3.5" />
-            限定令牌
+            {t("settings.tabScopedTokens")}
           </TabsTrigger>
         </TabsList>
 

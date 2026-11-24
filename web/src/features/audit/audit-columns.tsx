@@ -9,36 +9,40 @@ import {
 } from "@/components/shared/decision-badge"
 import type { AuditEntry } from "@/lib/api"
 import { formatDateTime, formatLatency } from "@/lib/format"
+import { translate, type Locale } from "@/lib/i18n"
 
-export const AUDIT_COLUMN_LABELS: Record<string, string> = {
-  occurred_at: "发生时间",
-  platform_id: "平台",
-  request: "目标请求",
-  actor: "用户",
-  route_tier: "路由层级",
-  decision: "判定与状态",
-  client_ip: "客户端 IP",
-  latency_ms: "耗时",
+export function getAuditColumnLabels(locale: Locale): Record<string, string> {
+  return {
+    occurred_at: translate(locale, "audit.colOccurredAt"),
+    platform_id: translate(locale, "audit.colPlatform"),
+    request: translate(locale, "audit.colTargetRequest"),
+    actor: translate(locale, "audit.colActor"),
+    route_tier: translate(locale, "audit.colRouteTier"),
+    decision: translate(locale, "audit.colDecisionStatus"),
+    client_ip: translate(locale, "audit.colClientIp"),
+    latency_ms: translate(locale, "audit.colLatency"),
+  }
 }
 
 export function createAuditColumns(
+  locale: Locale,
   onInspect: (entry: AuditEntry) => void
 ): ColumnDef<AuditEntry>[] {
   return [
     {
       id: "occurred_at",
       accessorKey: "occurred_at",
-      header: "时间",
+      header: translate(locale, "audit.colTime"),
       cell: ({ row }) => (
         <span className="whitespace-nowrap font-mono text-xs text-muted-foreground tabular-nums">
-          {formatDateTime(row.original.occurred_at)}
+          {formatDateTime(row.original.occurred_at, locale)}
         </span>
       ),
     },
     {
       id: "platform_id",
       accessorKey: "platform_id",
-      header: "平台",
+      header: translate(locale, "audit.colPlatform"),
       cell: ({ row }) =>
         row.original.platform_id ? (
           <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">
@@ -50,7 +54,7 @@ export function createAuditColumns(
     },
     {
       id: "request",
-      header: "请求",
+      header: translate(locale, "audit.colRequest"),
       enableHiding: false,
       cell: ({ row }) => {
         const ev = row.original
@@ -74,7 +78,7 @@ export function createAuditColumns(
     },
     {
       id: "actor",
-      header: "用户",
+      header: translate(locale, "audit.colActor"),
       cell: ({ row }) => (
         <span className="truncate text-sm">{row.original.user_email}</span>
       ),
@@ -82,13 +86,13 @@ export function createAuditColumns(
     {
       id: "route_tier",
       accessorKey: "route_tier",
-      header: "路由层级",
+      header: translate(locale, "audit.colRouteTier"),
       cell: ({ row }) => <RouteTierBadge tier={row.original.route_tier} />,
     },
     {
       id: "decision",
       accessorKey: "decision",
-      header: "判定 / 状态",
+      header: translate(locale, "audit.colDecisionHeader"),
       enableHiding: false,
       cell: ({ row }) => (
         <div className="flex items-center gap-2">
@@ -100,7 +104,7 @@ export function createAuditColumns(
     {
       id: "client_ip",
       accessorKey: "client_ip",
-      header: "客户端 IP",
+      header: translate(locale, "audit.colClientIp"),
       cell: ({ row }) => (
         <span className="font-mono text-xs text-muted-foreground tabular-nums">
           {row.original.client_ip}
@@ -110,7 +114,9 @@ export function createAuditColumns(
     {
       id: "latency_ms",
       accessorKey: "latency_ms",
-      header: () => <div className="text-right">耗时</div>,
+      header: () => (
+        <div className="text-right">{translate(locale, "audit.colLatency")}</div>
+      ),
       cell: ({ row }) => (
         <div className="text-right font-mono text-xs text-muted-foreground tabular-nums">
           {formatLatency(row.original.latency_ms)}
@@ -120,14 +126,18 @@ export function createAuditColumns(
     {
       id: "actions",
       enableHiding: false,
-      header: () => <span className="sr-only">详情</span>,
+      header: () => (
+        <span className="sr-only">{translate(locale, "audit.colDetail")}</span>
+      ),
       cell: ({ row }) => (
         <div className="flex justify-end">
           <Button
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label={`查看记录 #${row.original.id}`}
+            aria-label={translate(locale, "audit.inspectAria", {
+              id: row.original.id,
+            })}
             onClick={(e) => {
               e.stopPropagation()
               onInspect(row.original)

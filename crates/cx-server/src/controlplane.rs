@@ -201,6 +201,7 @@ fn to_user_summary(u: &UserRecord) -> UserSummary {
         id: u.id.clone(),
         email: u.email.clone(),
         display_name: u.display_name.clone(),
+        avatar_url: u.avatar_url.clone(),
         groups: u.groups.clone(),
     }
 }
@@ -414,6 +415,7 @@ async fn oidc_callback(
                 &identity.subject,
                 &identity.email,
                 &identity.display_name,
+                identity.avatar_url.as_deref(),
                 &identity.groups,
             )
             .await
@@ -482,6 +484,7 @@ async fn oidc_callback(
             &identity.subject,
             &identity.email,
             &identity.display_name,
+            identity.avatar_url.as_deref(),
             &identity.groups,
         )
         .await

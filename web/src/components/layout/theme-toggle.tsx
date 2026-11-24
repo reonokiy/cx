@@ -6,16 +6,22 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { useI18n, type MessageKey } from "@/lib/i18n"
 import { useTheme, type ThemePreference } from "@/lib/theme"
 
-const OPTIONS: { value: ThemePreference; label: string; icon: typeof Sun }[] = [
-  { value: "light", label: "浅色模式", icon: Sun },
-  { value: "dark", label: "深色模式", icon: Moon },
-  { value: "system", label: "跟随系统", icon: Laptop },
+const OPTIONS: {
+  value: ThemePreference
+  labelKey: MessageKey
+  icon: typeof Sun
+}[] = [
+  { value: "light", labelKey: "theme.light", icon: Sun },
+  { value: "dark", labelKey: "theme.dark", icon: Moon },
+  { value: "system", labelKey: "theme.system", icon: Laptop },
 ]
 
 export function ThemeToggle() {
   const { theme, resolvedTheme, setTheme } = useTheme()
+  const { t } = useI18n()
 
   return (
     <DropdownMenu>
@@ -24,7 +30,7 @@ export function ThemeToggle() {
           type="button"
           variant="ghost"
           size="icon-sm"
-          aria-label="切换外观主题"
+          aria-label={t("theme.aria")}
         >
           {resolvedTheme === "dark" ? (
             <Moon className="size-4" />
@@ -34,7 +40,7 @@ export function ThemeToggle() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-36">
-        {OPTIONS.map(({ value, label, icon: Icon }) => (
+        {OPTIONS.map(({ value, labelKey, icon: Icon }) => (
           <DropdownMenuItem
             key={value}
             onSelect={() => setTheme(value)}
@@ -42,7 +48,7 @@ export function ThemeToggle() {
           >
             <span className="flex items-center gap-2">
               <Icon className="size-4" />
-              {label}
+              {t(labelKey)}
             </span>
             {theme === value && <Check className="size-3.5" />}
           </DropdownMenuItem>

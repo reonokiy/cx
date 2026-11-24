@@ -9,7 +9,7 @@ import {
   Plus,
   SlidersHorizontal,
 } from "lucide-react"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,6 +35,7 @@ import {
 import type { AppRoute } from "@/hooks/use-hash-route"
 import { useAuth } from "@/lib/auth"
 import { getInitials } from "@/lib/format"
+import { useI18n } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 
 interface AppSidebarProps {
@@ -42,26 +43,21 @@ interface AppSidebarProps {
   onNavigate: (route: AppRoute) => void
 }
 
-function summarizePlatforms(platformIds: string[]): string {
-  if (platformIds.length === 0) return "尚未挂载平台"
-  if (platformIds.length <= 3) return platformIds.join(" · ")
-  return `${platformIds.slice(0, 2).join(" · ")} +${platformIds.length - 2}`
-}
-
 export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
   const { session, signOut } = useAuth()
   const {
     profiles,
     activeProfile,
-    activeProfileMeta,
     setActiveProfile,
     setCreateDialogOpen,
   } = useActiveProfile()
   const { isMobile, setOpenMobile } = useSidebar()
+  const { t } = useI18n()
 
   if (!session) return null
   const { context, user } = session
   const displayName = context.display_name || context.email
+  const avatarUrl = context.avatar_url || user?.avatar_url || undefined
   const initials = getInitials(context.display_name, context.email)
 
   function handleSelectRoute(target: AppRoute) {
@@ -74,13 +70,9 @@ export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
     setOpenMobile(false)
   }
 
-  const activePlatformSubtitle = activeProfileMeta
-    ? summarizePlatforms(activeProfileMeta.platforms.map((p) => p.id))
-    : "CX Gateway"
-
   return (
     <Sidebar variant="inset" collapsible="icon">
-      {/* Top-Left Profile Workspace Switcher */}
+      {/* Top-Left Profile Switcher */}
       <SidebarHeader className="p-2">
         <SidebarMenu>
           <SidebarMenuItem>
@@ -88,36 +80,31 @@ export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
-                  aria-label="切换 Profile"
+                  aria-label={t("sidebar.switchProfile")}
                   className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
                 >
                   <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                     <Layers className="size-4" aria-hidden="true" />
                   </div>
-                  <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
-                    <span className="truncate font-mono font-semibold">
-                      {activeProfile || "未选择 Profile"}
-                    </span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      {activePlatformSubtitle}
-                    </span>
-                  </div>
-                  <ChevronsUpDown className="ml-auto size-4 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-left text-sm font-semibold">
+                    {activeProfile || "default"}
+                  </span>
+                  <ChevronsUpDown className="ml-auto size-4 shrink-0 text-muted-foreground" />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
-                className="w-64 rounded-lg"
+                className="w-56 rounded-lg"
                 align="start"
                 side={isMobile ? "bottom" : "right"}
                 sideOffset={6}
               >
                 <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                  切换 Profile
+                  {t("sidebar.switchProfile")}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {profiles.length === 0 ? (
                   <div className="px-2 py-3 text-center text-xs text-muted-foreground">
-                    暂无可用 Profile
+                    {t("sidebar.noProfiles")}
                   </div>
                 ) : (
                   profiles.map((prof) => {
@@ -128,14 +115,9 @@ export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
                         onSelect={() => handleSwitchProfile(prof.name)}
                         className="justify-between gap-2 py-2"
                       >
-                        <div className="min-w-0">
-                          <div className="truncate font-mono text-xs font-medium">
-                            {prof.name}
-                          </div>
-                          <div className="truncate text-[11px] text-muted-foreground">
-                            {summarizePlatforms(prof.platforms.map((p) => p.id))}
-                          </div>
-                        </div>
+                        <span className="truncate font-mono text-xs font-medium">
+                          {prof.name}
+                        </span>
                         {selected && <Check className="size-3.5 shrink-0" />}
                       </DropdownMenuItem>
                     )
@@ -152,7 +134,7 @@ export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
                       }}
                     >
                       <Plus className="size-3.5" />
-                      <span>新建 Profile</span>
+                      <span>{t("sidebar.newProfile")}</span>
                     </DropdownMenuItem>
                   </>
                 )}
@@ -165,51 +147,51 @@ export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>
-            {activeProfile ? "当前 Profile" : "工作区"}
+            {activeProfile ? t("nav.currentProfile") : t("nav.workspace")}
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton
-                  tooltip="概览"
+                  tooltip={t("nav.overview")}
                   isActive={route === "overview"}
                   onClick={() => handleSelectRoute("overview")}
                 >
                   <LayoutDashboard />
-                  <span>概览</span>
+                  <span>{t("nav.overview")}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
               <SidebarMenuItem>
                 <SidebarMenuButton
-                  tooltip="平台与规则"
+                  tooltip={t("nav.platforms")}
                   isActive={route === "platforms"}
                   onClick={() => handleSelectRoute("platforms")}
                 >
                   <Blocks />
-                  <span>平台与规则</span>
+                  <span>{t("nav.platforms")}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
               <SidebarMenuItem>
                 <SidebarMenuButton
-                  tooltip="审计日志"
+                  tooltip={t("nav.audit")}
                   isActive={route === "audit"}
                   onClick={() => handleSelectRoute("audit")}
                 >
                   <Activity />
-                  <span>审计日志</span>
+                  <span>{t("nav.audit")}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
               <SidebarMenuItem>
                 <SidebarMenuButton
-                  tooltip="设置与令牌"
+                  tooltip={t("nav.settings")}
                   isActive={route === "settings"}
                   onClick={() => handleSelectRoute("settings")}
                 >
                   <SlidersHorizontal />
-                  <span>设置与令牌</span>
+                  <span>{t("nav.settings")}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
@@ -224,10 +206,18 @@ export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
-                  aria-label="账号菜单"
+                  aria-label={t("sidebar.accountMenu")}
                   className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
                 >
                   <Avatar className="size-8 rounded-lg">
+                    {avatarUrl && (
+                      <AvatarImage
+                        src={avatarUrl}
+                        alt={displayName}
+                        referrerPolicy="no-referrer"
+                        className="rounded-lg object-cover"
+                      />
+                    )}
                     <AvatarFallback className="rounded-lg bg-muted text-xs font-medium text-foreground">
                       {initials}
                     </AvatarFallback>
@@ -248,24 +238,41 @@ export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
                 sideOffset={6}
               >
                 <DropdownMenuLabel className="p-2.5 font-normal">
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">
-                        {displayName}
-                      </span>
-                      <span className="text-[11px] text-muted-foreground">
-                        {context.admin ? "管理员" : "成员"}
-                      </span>
-                    </div>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {context.email}
-                    </p>
-                    {user && user.groups.length > 0 && (
-                      <p className="truncate pt-0.5 font-mono text-[11px] text-muted-foreground">
-                        {user.groups.join(" · ")}
+                  <div className="flex items-center gap-2.5">
+                    <Avatar className="size-8 rounded-lg">
+                      {avatarUrl && (
+                        <AvatarImage
+                          src={avatarUrl}
+                          alt={displayName}
+                          referrerPolicy="no-referrer"
+                          className="rounded-lg object-cover"
+                        />
+                      )}
+                      <AvatarFallback className="rounded-lg bg-muted text-xs font-medium text-foreground">
+                        {initials}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm font-medium">
+                          {displayName}
+                        </span>
+                        <span className="shrink-0 text-[11px] text-muted-foreground">
+                          {context.admin
+                            ? t("sidebar.roleAdmin")
+                            : t("sidebar.roleMember")}
+                        </span>
+                      </div>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {context.email}
                       </p>
-                    )}
+                    </div>
                   </div>
+                  {user && user.groups.length > 0 && (
+                    <p className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
+                      {user.groups.join(" · ")}
+                    </p>
+                  )}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
@@ -273,7 +280,7 @@ export function AppSidebar({ route, onNavigate }: AppSidebarProps) {
                   className="text-destructive focus:text-destructive"
                 >
                   <LogOut />
-                  <span>退出登录</span>
+                  <span>{t("sidebar.signOut")}</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

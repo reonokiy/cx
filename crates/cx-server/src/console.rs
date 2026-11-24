@@ -182,7 +182,7 @@ async fn serve_asset(file: &str) -> Response {
                 (header::CACHE_CONTROL, "no-cache"),
                 (
                     header::CONTENT_SECURITY_POLICY,
-                    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+                    "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
                 ),
             ],
             bytes,
@@ -271,6 +271,7 @@ struct ProfileOverview {
 struct ConsoleContext {
     email: String,
     display_name: String,
+    avatar_url: Option<String>,
     admin: bool,
     encryption_ready: bool,
     providers: Vec<ProviderCatalogEntry>,
@@ -429,6 +430,7 @@ async fn context(
     Ok(Json(ConsoleContext {
         email: principal.user.email,
         display_name: principal.user.display_name,
+        avatar_url: principal.user.avatar_url,
         admin,
         encryption_ready: state.store.has_master_key(),
         providers: state.registry.list_provider_catalog(),
@@ -1010,6 +1012,7 @@ r49a8s8FnaNbeuNPfdPIBXSLROjI7BWGVChJmETldRIkW5Lu3Tm8C6IG
                             "nonce": nonce,
                             "email": "oidc-admin@example.com",
                             "name": "OIDC Admin",
+                            "picture": "https://id.example.com/avatar.png",
                             "groups": ["cx-admins", "eng"]
                         });
                         let mut header = Header::new(Algorithm::ES256);
@@ -1296,6 +1299,7 @@ r49a8s8FnaNbeuNPfdPIBXSLROjI7BWGVChJmETldRIkW5Lu3Tm8C6IG
             .await
             .unwrap();
         assert_eq!(console_ctx["email"], "oidc-admin@example.com");
+        assert_eq!(console_ctx["avatar_url"], "https://id.example.com/avatar.png");
         assert_eq!(console_ctx["admin"], true);
         let gh_plat = console_ctx["profiles"][0]["platforms"]
             .as_array()

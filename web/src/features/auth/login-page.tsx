@@ -9,35 +9,39 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { BrandMark } from "@/components/layout/brand-mark"
+import { LocaleToggle } from "@/components/layout/locale-toggle"
 import { ThemeToggle } from "@/components/layout/theme-toggle"
 import { useGatewayHealth } from "@/hooks/use-console-queries"
 import { useAuth } from "@/lib/auth"
+import { useI18n, type MessageKey } from "@/lib/i18n"
 
-const OIDC_ERROR_MESSAGES: Record<string, string> = {
-  oidc_access_denied: "你已取消登录授权，或身份提供方拒绝了访问。",
-  oidc_not_configured: "服务端尚未启用 OIDC 配置，请联系管理员。",
-  oidc_provider_unreachable: "无法连接身份提供方，请稍后重试。",
-  oidc_expired: "登录会话已超时或失效，请重新登录。",
-  oidc_invalid_session: "登录状态校验失败，请重新发起登录。",
-  oidc_verification_failed: "身份令牌校验失败，请联系管理员。",
-  oidc_failed: "登录未完成，请重试。",
+const OIDC_ERROR_KEYS: Record<string, MessageKey> = {
+  oidc_access_denied: "login.err.oidc_access_denied",
+  oidc_not_configured: "login.err.oidc_not_configured",
+  oidc_provider_unreachable: "login.err.oidc_provider_unreachable",
+  oidc_expired: "login.err.oidc_expired",
+  oidc_invalid_session: "login.err.oidc_invalid_session",
+  oidc_verification_failed: "login.err.oidc_verification_failed",
+  oidc_failed: "login.err.oidc_failed",
 }
 
 export function LoginPage() {
   const { sessionExpired, authConfig, oidcErrorCode } = useAuth()
   const { data: health } = useGatewayHealth()
+  const { t } = useI18n()
 
   const bannerError = oidcErrorCode
-    ? (OIDC_ERROR_MESSAGES[oidcErrorCode] ?? OIDC_ERROR_MESSAGES.oidc_failed)
+    ? t(OIDC_ERROR_KEYS[oidcErrorCode] ?? "login.err.oidc_failed")
     : sessionExpired
-      ? "登录会话已失效，请重新登录。"
+      ? t("login.sessionExpired")
       : health && !health.ok
-        ? "当前无法连接网关控制面，请稍后重试。"
+        ? t("login.controlPlaneUnavailable")
         : ""
 
   return (
     <div className="flex min-h-svh flex-col bg-muted/30">
-      <header className="flex items-center justify-end p-5">
+      <header className="flex items-center justify-end gap-1.5 p-5">
+        <LocaleToggle />
         <ThemeToggle />
       </header>
 
@@ -54,11 +58,9 @@ export function LoginPage() {
                 aria-level={1}
                 className="text-xl tracking-tight"
               >
-                登录控制台
+                {t("login.title")}
               </CardTitle>
-              <CardDescription>
-                使用组织 OIDC 账号继续访问 CX Gateway
-              </CardDescription>
+              <CardDescription>{t("login.description")}</CardDescription>
             </CardHeader>
 
             <CardContent className="space-y-4">
@@ -75,7 +77,7 @@ export function LoginPage() {
                 <Button size="lg" className="w-full" asChild>
                   <a href="/v1/console/auth/oidc/start">
                     <LogIn />
-                    <span>使用 OIDC 单点登录</span>
+                    <span>{t("login.oidcButton")}</span>
                     <ArrowRight className="ml-auto" />
                   </a>
                 </Button>
@@ -83,22 +85,22 @@ export function LoginPage() {
                 <>
                   <Alert variant="destructive">
                     <CircleAlert />
-                    <AlertTitle>服务端尚未启用 OIDC</AlertTitle>
+                    <AlertTitle>{t("login.oidcDisabledTitle")}</AlertTitle>
                     <AlertDescription>
-                      请在服务端配置{" "}
+                      {t("login.oidcDisabledDescBefore")}{" "}
                       <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
                         [oidc]
-                      </code>
-                      ，本地开发可使用{" "}
+                      </code>{" "}
+                      {t("login.oidcDisabledDescMid")}{" "}
                       <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
                         deploy/dev/
                       </code>{" "}
-                      中的 Dex 配置。
+                      {t("login.oidcDisabledDescAfter")}
                     </AlertDescription>
                   </Alert>
                   <Button size="lg" className="w-full" disabled>
                     <LogIn />
-                    <span>使用 OIDC 单点登录</span>
+                    <span>{t("login.oidcButton")}</span>
                   </Button>
                 </>
               )}

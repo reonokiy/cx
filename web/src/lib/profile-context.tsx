@@ -60,6 +60,11 @@ export function ProfileProvider({
   const sharedSecrets = session?.context.shared_secrets ?? []
   const profileNames = useMemo(() => profiles.map((p) => p.name), [profiles])
 
+  const defaultProfileName = useMemo(() => {
+    if (profileNames.includes("default")) return "default"
+    return profileNames[0] ?? ""
+  }, [profileNames])
+
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [selected, setSelected] = useState<string>(() => {
     if (requestedProfile && profileNames.includes(requestedProfile)) {
@@ -67,7 +72,7 @@ export function ProfileProvider({
     }
     const saved = readSavedProfile()
     if (saved && profileNames.includes(saved)) return saved
-    return profileNames[0] ?? ""
+    return defaultProfileName
   })
 
   useEffect(() => {
@@ -79,8 +84,8 @@ export function ProfileProvider({
 
   const activeProfile = useMemo(() => {
     if (selected && profileNames.includes(selected)) return selected
-    return profileNames[0] ?? ""
-  }, [selected, profileNames])
+    return defaultProfileName
+  }, [selected, profileNames, defaultProfileName])
 
   const setActiveProfile = useCallback((next: string) => {
     setSelected(next)

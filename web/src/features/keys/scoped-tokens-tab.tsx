@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { CircleAlert, KeySquare, ShieldCheck } from "lucide-react"
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
@@ -41,29 +41,25 @@ import { CopyButton } from "@/components/shared/copy-button"
 import { useCreateScopedTokenMutation } from "@/hooks/use-console-queries"
 import { getErrorMessage, type CreateScopedTokenResponse } from "@/lib/api"
 import { formatDateTime } from "@/lib/format"
+import { useI18n, type MessageKey } from "@/lib/i18n"
 import { useActiveProfile } from "@/lib/profile-context"
 
-const PAT_TTLS = [
-  { label: "1 天", value: "86400" },
-  { label: "7 天", value: "604800" },
-  { label: "30 天", value: "2592000" },
-  { label: "90 天", value: "7776000" },
-  { label: "365 天", value: "31536000" },
-] as const
+const PAT_TTLS: { labelKey: MessageKey; value: string }[] = [
+  { labelKey: "tokens.ttl1d", value: "86400" },
+  { labelKey: "tokens.ttl7d", value: "604800" },
+  { labelKey: "tokens.ttl30d", value: "2592000" },
+  { labelKey: "tokens.ttl90d", value: "7776000" },
+  { labelKey: "tokens.ttl365d", value: "31536000" },
+]
 
-const scopedTokenSchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(2, "名称至少 2 个字符")
-    .max(64, "名称不超过 64 个字符"),
-  ttlSecs: z.string(),
-})
-
-type ScopedTokenFormValues = z.infer<typeof scopedTokenSchema>
+interface ScopedTokenFormValues {
+  name: string
+  ttlSecs: string
+}
 
 export function ScopedTokensTab() {
   const { activeProfile, canIssueKeys } = useActiveProfile()
+  const { locale, t } = useI18n()
   const createToken = useCreateScopedTokenMutation()
   const [issued, setIssued] = useState<{
     res: CreateScopedTokenResponse
@@ -71,6 +67,19 @@ export function ScopedTokensTab() {
     profile: string
   } | null>(null)
   const [submitError, setSubmitError] = useState("")
+
+  const scopedTokenSchema = useMemo(
+    () =>
+      z.object({
+        name: z
+          .string()
+          .trim()
+          .min(2, t("tokens.errNameMin"))
+          .max(64, t("tokens.errNameMax")),
+        ttlSecs: z.string(),
+      }),
+    [t]
+  )
 
   const form = useForm<ScopedTokenFormValues>({
     resolver: zodResolver(scopedTokenSchema),
@@ -88,11 +97,13 @@ export function ScopedTokensTab() {
             <EmptyMedia variant="icon">
               <KeySquare />
             </EmptyMedia>
-            <EmptyTitle className="text-base">无法签发限定令牌</EmptyTitle>
+            <EmptyTitle className="text-base">
+              {t("tokens.cannotIssueTitle")}
+            </EmptyTitle>
             <EmptyDescription>
               {activeProfile
-                ? `当前账号无权为 ${activeProfile} 签发限定令牌。`
-                : "请先选择一个 Profile。"}
+                ? t("tokens.cannotIssueDesc", { profile: activeProfile })
+                : t("vkeys.selectProfile")}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -110,7 +121,7 @@ export function ScopedTokensTab() {
       })
       setIssued({ res, name: values.name, profile: activeProfile })
       form.reset({ name: "", ttlSecs: values.ttlSecs })
-      toast.success(`已为 ${activeProfile} 签发限定令牌`)
+      toast.success(t("tokens.toastIssued", { profile: activeProfile }))
     } catch (err) {
       const msg = getErrorMessage(err)
       setSubmitError(msg)
@@ -125,10 +136,12 @@ export function ScopedTokensTab() {
       <Card className="max-w-xl shadow-xs">
         <CardHeader>
           <CardTitle className="text-sm font-medium">
-            为 <code className="font-mono">{activeProfile}</code> 签发限定令牌
+            {t("tokens.titleBefore")}{" "}
+            <code className="font-mono">{activeProfile}</code>{" "}
+            {t("tokens.titleAfter")}
           </CardTitle>
           <CardDescription className="text-xs">
-            供 CI/CD 或脚本通过 CLI 访问当前 Profile，无法越权操作其他 Profile。
+            {t("tokens.desc")}
           </CardDescription>
         </CardHeader>
 
@@ -137,11 +150,11 @@ export function ScopedTokensTab() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="pat-name" className="text-xs">
-                  名称
+                  {t("tokens.name")}
                 </Label>
                 <Input
                   id="pat-name"
-                  placeholder="例如：github-actions"
+                  placeholder={t("tokens.namePlaceholder")}
                   disabled={createToken.isPending}
                   {...form.register("name")}
                 />
@@ -154,7 +167,7 @@ export function ScopedTokensTab() {
 
               <div className="space-y-1.5">
                 <Label htmlFor="pat-ttl" className="text-xs">
-                  有效期
+                  {t("tokens.ttl")}
                 </Label>
                 <Select
                   value={form.watch("ttlSecs")}
@@ -167,7 +180,7 @@ export function ScopedTokensTab() {
                   <SelectContent>
                     {PAT_TTLS.map((item) => (
                       <SelectItem key={item.value} value={item.value}>
-                        {item.label}
+                        {t(item.labelKey)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -184,7 +197,7 @@ export function ScopedTokensTab() {
 
             <Button type="submit" size="sm" disabled={createToken.isPending}>
               <KeySquare />
-              {createToken.isPending ? "签发中…" : "签发限定令牌"}
+              {createToken.isPending ? t("tokens.issuing") : t("tokens.issue")}
             </Button>
           </form>
         </CardContent>
@@ -201,11 +214,9 @@ export function ScopedTokensTab() {
             <DialogHeader>
               <div className="mb-1 flex items-center gap-2">
                 <ShieldCheck className="size-4 text-success" />
-                <DialogTitle>限定令牌已签发</DialogTitle>
+                <DialogTitle>{t("tokens.dialogTitle")}</DialogTitle>
               </div>
-              <DialogDescription>
-                明文令牌仅显示一次，请立即保存。
-              </DialogDescription>
+              <DialogDescription>{t("tokens.dialogDesc")}</DialogDescription>
             </DialogHeader>
 
             <div className="space-y-3">
@@ -219,7 +230,6 @@ export function ScopedTokensTab() {
                 />
                 <CopyButton
                   value={issued.res.token}
-                  label="复制"
                   variant="default"
                   size="sm"
                   showLabel
@@ -228,19 +238,24 @@ export function ScopedTokensTab() {
 
               <div className="flex items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2">
                 <code className="truncate font-mono text-xs">{cliCommand}</code>
-                <CopyButton value={cliCommand} label="复制命令" />
+                <CopyButton
+                  value={cliCommand}
+                  label={t("tokens.copyCommand")}
+                />
               </div>
 
               <p className="text-xs text-muted-foreground tabular-nums">
-                {issued.name} · Profile：
-                <code className="font-mono">{issued.profile}</code> · 到期：
-                {formatDateTime(issued.res.expires_at)}
+                {issued.name} · Profile:{" "}
+                <code className="font-mono">{issued.profile}</code> ·{" "}
+                {t("tokens.dialogExpires", {
+                  time: formatDateTime(issued.res.expires_at, locale),
+                })}
               </p>
             </div>
 
             <DialogFooter>
               <Button size="sm" onClick={() => setIssued(null)}>
-                完成
+                {t("common.done")}
               </Button>
             </DialogFooter>
           </DialogContent>
